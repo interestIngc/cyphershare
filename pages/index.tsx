@@ -70,6 +70,7 @@ import {
 declare global {
   interface Window {
     ethereum?: any;
+    loadPyodide: (options?: { indexURL: string }) => Promise<any>; // Pyodide instance
   }
 }
 
@@ -137,6 +138,77 @@ export default function Home() {
   const [selectedPyFileForView, setSelectedPyFileForView] =
     useState<FileItem | null>(null);
   const pyFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Pyodide State
+  const [pyodide, setPyodide] = useState<any>(null);
+  const [isPyodideReady, setIsPyodideReady] = useState(false);
+  const [pyodideLoadingMessage, setPyodideLoadingMessage] = useState<
+    string | null
+  >("Pyodide loading not yet started.");
+  const [pyodideOutput, setPyodideOutput] = useState<string[]>([]);
+  const [selectedDataFiles, setSelectedDataFiles] = useState<FileList | null>(
+    null
+  );
+  const [isScriptRunning, setIsScriptRunning] = useState(false);
+
+  // Pyodide Initialization Effect
+  useEffect(() => {
+    const loadPyodideInstance = async () => {
+      setPyodideLoadingMessage("Loading Pyodide runtime...");
+      console.log("Attempting to load Pyodide...");
+      try {
+        const pyodideModule = await window.loadPyodide({
+          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/",
+        });
+        setPyodide(pyodideModule);
+        setIsPyodideReady(true);
+        setPyodideLoadingMessage("Pyodide loaded successfully.");
+        console.log("Pyodide loaded successfully");
+      } catch (error) {
+        console.error("Failed to load Pyodide:", error);
+        setPyodideLoadingMessage(
+          `Error loading Pyodide: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        setIsPyodideReady(false);
+      }
+    };
+
+    if (typeof window !== "undefined" && !pyodide && !isPyodideReady) {
+      if (!window.loadPyodide) {
+        setPyodideLoadingMessage("Loading Pyodide script from CDN...");
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js";
+        script.onload = () => {
+          console.log("Pyodide script loaded from CDN.");
+          loadPyodideInstance();
+        };
+        script.onerror = () => {
+          console.error("Failed to load Pyodide script from CDN.");
+          setPyodideLoadingMessage(
+            "Failed to load Pyodide script. Check network or adblockers."
+          );
+        };
+        document.head.appendChild(script);
+        return () => {
+          // Cleanup script tag if component unmounts during load
+          if (document.head.contains(script)) {
+            document.head.removeChild(script);
+          }
+        };
+      } else {
+        // window.loadPyodide is already available
+        loadPyodideInstance();
+      }
+    } else if (
+      pyodide &&
+      isPyodideReady &&
+      pyodideLoadingMessage !== "Pyodide is ready."
+    ) {
+      setPyodideLoadingMessage("Pyodide is ready.");
+    }
+  }, [pyodide, isPyodideReady]); // Dependencies
 
   useEffect(() => {
     if (accessConditionType === "time" && timeInputRef.current) {
@@ -931,7 +1003,10 @@ export default function Home() {
 
     try {
       setCopySuccess(`Fetching ${file.name} for viewing...`);
-      setSelectedPyFileForView(file);
+      setSelectedPyFileForView(file); // Set the script file that is being viewed
+      setPyodideOutput([]); // Clear previous output when opening new script
+      setSelectedDataFiles(null); // Clear previously selected data files
+      if (pyFileInputRef.current) pyFileInputRef.current.value = ""; // Reset file input
 
       let fileDataBlob: Blob | undefined;
 
@@ -1005,7 +1080,7 @@ export default function Home() {
 
       if (fileDataBlob) {
         const textContent = await fileDataBlob.text();
-        setPyFileContent(textContent);
+        setPyFileContent(textContent); // This is the script content
         setIsViewPyModalOpen(true);
       } else {
         throw new Error("Could not retrieve file content for viewing.");
@@ -1019,6 +1094,118 @@ export default function Home() {
       setTimeout(() => setUploadError(null), 5000);
       setSelectedPyFileForView(null);
       setCopySuccess(null);
+    }
+  };
+
+  const handleRunPyScriptInModal = async () => {
+    if (!pyodide || !isPyodideReady) {
+      setPyodideOutput((prev) => [...prev, "Error: Pyodide is not ready."]);
+      return;
+    }
+    if (!selectedPyFileForView || !pyFileContent) {
+      // pyFileContent is the script source
+      setPyodideOutput((prev) => [
+        ...prev,
+        "Error: No Python script content loaded for execution.",
+      ]);
+      return;
+    }
+    if (!selectedDataFiles || selectedDataFiles.length === 0) {
+      setPyodideOutput((prev) => [
+        ...prev,
+        "Error: No data files selected to run the script on.",
+      ]);
+      return;
+    }
+
+    setIsScriptRunning(true);
+    setPyodideOutput([`Running script: ${selectedPyFileForView.name}...`]);
+
+    try {
+      setPyodideOutput((prev) => [
+        ...prev,
+        "Loading data files into virtual environment...",
+      ]);
+      for (const file of Array.from(selectedDataFiles)) {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const filePath = `/home/${file.name}`;
+        try {
+          pyodide.FS.mkdir("/home");
+        } catch (e) {
+          /* ignore if dir exists */
+        }
+        pyodide.FS.writeFile(filePath, uint8Array);
+        setPyodideOutput((prev) => [
+          ...prev,
+          `Loaded ${file.name} into FS at ${filePath}`,
+        ]);
+      }
+
+      setPyodideOutput((prev) => [
+        ...prev,
+        "Analyzing script for required packages...",
+      ]);
+      await pyodide.loadPackagesFromImports(pyFileContent);
+      setPyodideOutput((prev) => [...prev, "Packages loaded (if any)."]);
+
+      let scriptStdOut = ""; // To accumulate stdout
+      let scriptStdErr = ""; // To accumulate stderr
+      pyodide.setStdout({
+        batched: (msg: string) => {
+          scriptStdOut += msg + "\n";
+          setPyodideOutput((prev) => [...prev, `[stdout] ${msg}`]);
+        },
+      });
+      pyodide.setStderr({
+        batched: (msg: string) => {
+          scriptStdErr += msg + "\n";
+          setPyodideOutput((prev) => [...prev, `[stderr] ${msg}`]);
+        },
+      });
+
+      setPyodideOutput((prev) => [...prev, "Executing Python script..."]);
+      const result = await pyodide.runPythonAsync(pyFileContent); // pyFileContent is the script
+      setPyodideOutput((prev) => [...prev, `Script execution finished.`]);
+      if (result !== undefined) {
+        setPyodideOutput((prev) => [...prev, `Result: ${String(result)}`]);
+      }
+
+      // Example of reading an output file
+      const commonOutputFilePath = "/home/output.txt"; // A conventionally named output
+      if (pyodide.FS.analyzePath(commonOutputFilePath).exists) {
+        const outputContent = pyodide.FS.readFile(commonOutputFilePath, {
+          encoding: "utf8",
+        });
+        setPyodideOutput((prev) => [
+          ...prev,
+          `--- Content of ${commonOutputFilePath} ---`,
+          outputContent,
+          `--- End of ${commonOutputFilePath} ---`,
+        ]);
+      }
+    } catch (error) {
+      console.error("Error running Python script:", error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setPyodideOutput((prev) => [...prev, `Execution Error: ${errorMsg}`]);
+    } finally {
+      setIsScriptRunning(false);
+      // Clean up data files from Pyodide FS
+      if (pyodide && pyodide.FS && selectedDataFiles) {
+        for (const file of Array.from(selectedDataFiles)) {
+          try {
+            pyodide.FS.unlink(`/home/${file.name}`);
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        // Example cleanup for common output file
+        try {
+          pyodide.FS.unlink("/home/output.txt");
+        } catch (e) {
+          /* ignore */
+        }
+      }
     }
   };
 
@@ -1147,24 +1334,81 @@ export default function Home() {
               if (!isOpen) {
                 setPyFileContent("");
                 setSelectedPyFileForView(null);
+                setPyodideOutput([]);
+                setSelectedDataFiles(null);
+                if (pyFileInputRef.current) pyFileInputRef.current.value = "";
               }
             }}
           >
-            <DialogContent className="sm:max-w-[600px] md:max-w-[800px] lg:max-w-[1000px] h-[80vh] flex flex-col bg-card border-border">
+            <DialogContent className="sm:max-w-[700px] md:max-w-[900px] lg:max-w-[1100px] h-[90vh] flex flex-col bg-card border-border">
               <DialogHeader className="border-b border-border pb-3">
                 <DialogTitle className="font-mono text-primary">
-                  View: {selectedPyFileForView.name}
+                  View & Run: {selectedPyFileForView.name}
                 </DialogTitle>
                 <DialogDescription className="font-mono text-muted-foreground">
-                  Content of the Python file. Read-only.
+                  View the Python script. Select local data file(s) and run the
+                  script in a sandboxed Pyodide environment.
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex-grow overflow-y-auto p-1 border border-input rounded-md bg-background my-2">
-                <pre className="text-xs font-mono whitespace-pre-wrap break-all p-3 text-foreground">
-                  {pyFileContent}
-                </pre>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow overflow-hidden min-h-0">
+                <div className="flex flex-col overflow-hidden border border-input rounded-md p-1 bg-background">
+                  <h3 className="text-sm font-mono text-center py-1 text-primary/80">
+                    Script Content
+                  </h3>
+                  <div className="flex-grow overflow-y-auto p-1">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-all p-2 text-foreground">
+                      {pyFileContent}
+                    </pre>
+                  </div>
+                </div>
+
+                <div className="flex flex-col overflow-hidden border border-input rounded-md p-1 bg-background">
+                  <h3 className="text-sm font-mono text-center py-1 text-primary/80">
+                    Execution Output & Logs
+                  </h3>
+                  <div className="flex-grow overflow-y-auto p-1 mb-2 text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded min-h-[100px]">
+                    {pyodideLoadingMessage && !isPyodideReady && (
+                      <p className="p-2 text-amber-500">
+                        {pyodideLoadingMessage}
+                      </p>
+                    )}
+                    {isPyodideReady &&
+                      pyodideLoadingMessage ===
+                        "Pyodide loaded successfully." &&
+                      pyodideOutput.length === 0 && (
+                        <p className="p-2 text-green-500">
+                          Pyodide is ready. Select data file(s) and run script.
+                        </p>
+                      )}
+                    {pyodideOutput.map((line, index) => (
+                      <p
+                        key={index}
+                        className={`p-1 ${
+                          line.startsWith("[stderr]") ||
+                          line.startsWith("Execution Error:")
+                            ? "text-destructive"
+                            : "text-foreground/80"
+                        }`}
+                      >
+                        {line}
+                      </p>
+                    ))}
+                    {isScriptRunning && (
+                      <p className="p-2 text-primary animate-pulse">
+                        Script is running...
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
-              <DialogFooter className="mt-2">
+
+              <DialogFooter className="mt-2 pt-3 border-t border-border">
+                <div className="flex-grow text-xs text-muted-foreground font-mono mr-auto">
+                  {selectedDataFiles
+                    ? `${selectedDataFiles.length} data file(s) selected`
+                    : "No data files selected"}
+                </div>
                 <Button
                   variant="outline"
                   className="font-mono"
@@ -1174,36 +1418,43 @@ export default function Home() {
                     }
                   }}
                 >
-                  Choose File(s)
+                  Choose Data File(s)
                 </Button>
                 <input
                   type="file"
                   ref={pyFileInputRef}
                   className="hidden"
-                  multiple // Allow multiple file selection
+                  multiple
                   onChange={(e) => {
                     if (e.target.files && e.target.files.length > 0) {
                       const files = e.target.files;
+                      setSelectedDataFiles(files);
                       if (files.length === 1) {
-                        console.log(
-                          "File chosen for script (via modal):",
-                          files[0].name
-                        );
-                        setCopySuccess(`Selected input file: ${files[0].name}`);
+                        setCopySuccess(`Selected data file: ${files[0].name}`);
                       } else {
-                        console.log(
-                          `${files.length} files chosen for script (via modal):`
-                        );
-                        Array.from(files).forEach((file) =>
-                          console.log(file.name)
-                        );
-                        setCopySuccess(`Selected ${files.length} input files.`);
+                        setCopySuccess(`Selected ${files.length} data files.`);
                       }
                       setTimeout(() => setCopySuccess(null), 3000);
-                      if (e.target) e.target.value = "";
+                      // Don't reset e.target.value immediately, keep files for run
+                    } else {
+                      setSelectedDataFiles(null);
                     }
                   }}
                 />
+                <Button
+                  variant="default"
+                  className="font-mono bg-primary hover:bg-primary/90"
+                  onClick={handleRunPyScriptInModal}
+                  disabled={
+                    !isPyodideReady ||
+                    isScriptRunning ||
+                    !selectedDataFiles ||
+                    selectedDataFiles.length === 0 ||
+                    !pyFileContent
+                  }
+                >
+                  {isScriptRunning ? "Running..." : "Run Script"}
+                </Button>
                 <DialogClose asChild>
                   <Button variant="secondary" className="font-mono">
                     Close
@@ -2215,7 +2466,7 @@ export default function Home() {
                                       handleViewPyFile(file.id.toString())
                                     }
                                     className="h-8 w-8 p-0 hover:bg-primary/20 hover:text-primary text-accent-foreground border border-primary/20 transition-all relative group"
-                                    title="View Python file"
+                                    title="View & Run Python file"
                                     disabled={
                                       !file.fileId ||
                                       decryptionInProgress[file.fileId!]
@@ -2223,7 +2474,7 @@ export default function Home() {
                                   >
                                     <Eye size={14} />
                                     <span className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-black/80 text-white text-xs py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
-                                      View File
+                                      View/Run
                                     </span>
                                   </Button>
                                 )}
