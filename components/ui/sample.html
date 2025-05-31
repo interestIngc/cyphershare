@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pyodide File Load Example</title>
+</head>
+<body>
+  <h1>Select files to load into Pyodide FS</h1>
+  <input type="file" id="input-csv" multiple/>
+  <input type="file" id="script" />
+  <pre id="output"></pre>
+
+  <script type="module">
+    async function main() {
+      // Load Pyodide
+      const pyodide = await loadPyodide({
+        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/"
+      });
+
+      // File input element
+      const inputCsv = document.getElementById('input-csv');
+      const script = document.getElementById('script');
+      const output = document.getElementById('output');
+
+      async function loadFile(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+
+        // Write file into Pyodide FS at /home/filename
+        const filePath = `/home/${file.name}`;
+        // Create /home dir if doesn't exist
+        try { pyodide.FS.mkdir('/home'); } catch(e) {}
+
+        pyodide.FS.writeFile(filePath, uint8Array);
+
+        output.textContent += `Loaded ${file.name} into Pyodide FS at ${filePath}\n`;
+      }
+
+      inputCsv.addEventListener('change', async (event) => {
+        const files = event.target.files;
+
+        for (const file of files) {
+          await loadFile(file);
+          output.textContent += `Uploaded input csv ${file.name}\n`;
+        }
+      });
+
+      script.addEventListener('change', async (event) => {
+        const files = event.target.files;
+
+        if (files.length > 1) {
+            console.error('Only one script file is allowed');
+            return;
+        }
+
+        const script = files[0];
+        await loadFile(script);
+
+        output.textContent += `Running ${script.name}\n`;
+
+        const scriptContent = await script.text();
+
+        await pyodide.loadPackagesFromImports(scriptContent);
+        pyodide.setStdout({ batched: (msg) => console.log(msg) });
+
+        const result = await pyodide.runPythonAsync(scriptContent);
+        output.textContent += `Result: ${result}\n`;
+
+        const content = pyodide.FS.readFile(
+            '/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt',
+            { encoding: 'utf8' });
+
+        output.textContent += `Content:\n${content}\n`;
+      });
+    }
+
+    import("https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js")
+      .then(() => main())
+      .catch(console.error);
+  </script>
+</body>
+</html>
