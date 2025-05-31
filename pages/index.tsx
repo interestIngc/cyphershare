@@ -28,7 +28,7 @@ import {
   Unlock,
   Shield,
   Eye,
-} from "lucide-react"; // Added Eye
+} from "lucide-react";
 import Head from "next/head";
 import { useDropzone } from "react-dropzone";
 import {
@@ -49,7 +49,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogClose,
-} from "@/components/ui/dialog"; // Added Dialog components
+} from "@/components/ui/dialog";
 import { useCodex, CodexClient, getCodexClient } from "@/hooks/useCodex";
 import useWaku, { WakuFileMessage } from "@/hooks/useWaku";
 import axios from "axios";
@@ -132,12 +132,11 @@ export default function Home() {
   const [nftContractAddress, setNftContractAddress] = useState("");
   const nftContractAddressInputRef = useRef<HTMLDivElement>(null);
 
-  // State for Python file view modal
   const [isViewPyModalOpen, setIsViewPyModalOpen] = useState(false);
   const [pyFileContent, setPyFileContent] = useState("");
   const [selectedPyFileForView, setSelectedPyFileForView] =
     useState<FileItem | null>(null);
-  const pyFileInputRef = useRef<HTMLInputElement>(null); // For the "Choose file" button in modal
+  const pyFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (accessConditionType === "time" && timeInputRef.current) {
@@ -940,8 +939,8 @@ export default function Home() {
         if (!walletConnected || !signer) {
           setUploadError("Connect your wallet to view encrypted Python files.");
           setTimeout(() => setUploadError(null), 5000);
-          setSelectedPyFileForView(null); // Reset selected file
-          setCopySuccess(null); // Clear loading message
+          setSelectedPyFileForView(null);
+          setCopySuccess(null);
           return;
         }
         setDecryptionInProgress((prev) => ({ ...prev, [file.fileId!]: true }));
@@ -965,7 +964,6 @@ export default function Home() {
             signer
           );
           if (decryptedBytes) {
-            // Assuming Python files are plain text after decryption
             fileDataBlob = new Blob([new Uint8Array(decryptedBytes)], {
               type: "text/plain",
             });
@@ -986,8 +984,8 @@ export default function Home() {
             setDecryptionError(null);
             setUploadError(null);
           }, 5000);
-          setSelectedPyFileForView(null); // Reset selected file
-          setCopySuccess(null); // Clear loading message
+          setSelectedPyFileForView(null);
+          setCopySuccess(null);
           return;
         } finally {
           setDecryptionInProgress((prev) => ({
@@ -1012,15 +1010,15 @@ export default function Home() {
       } else {
         throw new Error("Could not retrieve file content for viewing.");
       }
-      setCopySuccess(null); // Clear loading message
+      setCopySuccess(null);
     } catch (error) {
       console.error("Error viewing Python file:", error);
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       setUploadError(`Failed to view Python file: ${errorMessage}`);
       setTimeout(() => setUploadError(null), 5000);
-      setSelectedPyFileForView(null); // Reset selected file
-      setCopySuccess(null); // Clear loading message
+      setSelectedPyFileForView(null);
+      setCopySuccess(null);
     }
   };
 
@@ -1141,7 +1139,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Python File View Modal */}
         {isViewPyModalOpen && selectedPyFileForView && (
           <Dialog
             open={isViewPyModalOpen}
@@ -1177,23 +1174,32 @@ export default function Home() {
                     }
                   }}
                 >
-                  Choose File
+                  Choose File(s)
                 </Button>
                 <input
                   type="file"
                   ref={pyFileInputRef}
                   className="hidden"
+                  multiple // Allow multiple file selection
                   onChange={(e) => {
                     if (e.target.files && e.target.files.length > 0) {
-                      console.log(
-                        "File chosen for script (via modal):",
-                        e.target.files[0].name
-                      );
-                      setCopySuccess(
-                        `Selected input file: ${e.target.files[0].name}`
-                      );
-                      setTimeout(() => setCopySuccess(null), 2000);
-                      // Reset file input to allow selecting the same file again
+                      const files = e.target.files;
+                      if (files.length === 1) {
+                        console.log(
+                          "File chosen for script (via modal):",
+                          files[0].name
+                        );
+                        setCopySuccess(`Selected input file: ${files[0].name}`);
+                      } else {
+                        console.log(
+                          `${files.length} files chosen for script (via modal):`
+                        );
+                        Array.from(files).forEach((file) =>
+                          console.log(file.name)
+                        );
+                        setCopySuccess(`Selected ${files.length} input files.`);
+                      }
+                      setTimeout(() => setCopySuccess(null), 3000);
                       if (e.target) e.target.value = "";
                     }
                   }}
