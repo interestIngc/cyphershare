@@ -28,6 +28,7 @@ import {
   Unlock,
   Shield,
   Eye,
+  Mail, // Added Mail icon for .eml
 } from "lucide-react";
 import Head from "next/head";
 import { useDropzone } from "react-dropzone";
@@ -138,6 +139,8 @@ export default function Home() {
   const [selectedPyFileForView, setSelectedPyFileForView] =
     useState<FileItem | null>(null);
   const pyFileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedEmlFile, setSelectedEmlFile] = useState<File | null>(null); // New state for .eml file
+  const emlFileInputRef = useRef<HTMLInputElement>(null); // New ref for .eml file input
 
   const [pyodide, setPyodide] = useState<any>(null);
   const [isPyodideReady, setIsPyodideReady] = useState(false);
@@ -1010,7 +1013,9 @@ export default function Home() {
       setPyodideOutput([]);
       setSelectedDataFiles(null);
       setPyodideOutputFilePath(null);
+      setSelectedEmlFile(null); // Reset .eml file when opening modal for a new Py file
       if (pyFileInputRef.current) pyFileInputRef.current.value = "";
+      if (emlFileInputRef.current) emlFileInputRef.current.value = "";
 
       let fileDataBlob: Blob | undefined;
 
@@ -1172,7 +1177,8 @@ export default function Home() {
       }
 
       // Check for a conventional output file
-      const conventionalOutputPath = "/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt";
+      const conventionalOutputPath =
+        "/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt";
       if (pyodide.FS.analyzePath(conventionalOutputPath).exists) {
         setPyodideOutput((prev) => [
           ...prev,
@@ -1433,6 +1439,8 @@ export default function Home() {
                 setSelectedDataFiles(null);
                 setPyodideOutputFilePath(null);
                 if (pyFileInputRef.current) pyFileInputRef.current.value = "";
+                setSelectedEmlFile(null); // Reset .eml file on modal close
+                if (emlFileInputRef.current) emlFileInputRef.current.value = ""; // Reset .eml file input on modal close
               }
             }}
           >
@@ -1443,7 +1451,8 @@ export default function Home() {
                 </DialogTitle>
                 <DialogDescription className="font-mono text-muted-foreground">
                   View the Python script. Select local data file(s) and run the
-                  script in a sandboxed Pyodide environment.
+                  script in a sandboxed Pyodide environment. Upload an .eml file
+                  to prove computation.
                 </DialogDescription>
               </DialogHeader>
 
@@ -1504,81 +1513,118 @@ export default function Home() {
                 </div>
               </div>
 
-              <DialogFooter className="mt-2 pt-3 border-t border-border items-center">
-                <div className="flex-grow text-xs text-muted-foreground font-mono mr-auto">
+              <DialogFooter className="mt-2 pt-3 border-t border-border items-center flex-wrap gap-2 justify-end">
+                <div className="flex-grow text-xs text-muted-foreground font-mono mr-auto w-full sm:w-auto mb-2 sm:mb-0">
                   {selectedDataFiles
                     ? `${selectedDataFiles.length} data file(s) selected`
                     : "No data files selected"}
                   {pyodideOutputFilePath &&
                     ` | Output: ${pyodideOutputFilePath.split("/").pop()}`}
+                  {selectedEmlFile && ` | EML: ${selectedEmlFile.name}`}
                 </div>
-                <Button
-                  variant="outline"
-                  className="font-mono"
-                  onClick={() => {
-                    if (pyFileInputRef.current) {
-                      pyFileInputRef.current.click();
-                    }
-                  }}
-                >
-                  Choose Data File(s)
-                </Button>
-                <input
-                  type="file"
-                  ref={pyFileInputRef}
-                  className="hidden"
-                  multiple
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files.length > 0) {
-                      const files = e.target.files;
-                      setSelectedDataFiles(files);
-                      if (files.length === 1) {
-                        setCopySuccess(`Selected data file: ${files[0].name}`);
-                      } else {
-                        setCopySuccess(`Selected ${files.length} data files.`);
+                <div className="flex gap-2 flex-wrap justify-end">
+                  <Button
+                    variant="outline"
+                    className="font-mono"
+                    onClick={() => {
+                      if (pyFileInputRef.current) {
+                        pyFileInputRef.current.click();
                       }
-                      setTimeout(() => setCopySuccess(null), 3000);
-                    } else {
-                      setSelectedDataFiles(null);
-                    }
-                  }}
-                />
-                <Button
-                  variant="default"
-                  className="font-mono bg-primary hover:bg-primary/90"
-                  onClick={handleRunPyScriptInModal}
-                  disabled={
-                    !isPyodideReady ||
-                    isScriptRunning ||
-                    !selectedDataFiles ||
-                    selectedDataFiles.length === 0 ||
-                    !pyFileContent ||
-                    isUploadingPyodideOutput
-                  }
-                >
-                  {isScriptRunning ? "Running..." : "Run Script"}
-                </Button>
-                <Button
-                  variant="secondary"
-                  className="font-mono"
-                  onClick={handleUploadPyodideOutput}
-                  disabled={
-                    !isPyodideReady ||
-                    isScriptRunning ||
-                    !pyodideOutputFilePath ||
-                    !isCodexNodeActive ||
-                    isUploadingPyodideOutput
-                  }
-                >
-                  {isUploadingPyodideOutput
-                    ? `Uploading ${pyodideOutputUploadProgress}%...`
-                    : "Upload Output"}
-                </Button>
-                <DialogClose asChild>
-                  <Button variant="outline" className="font-mono">
-                    Close
+                    }}
+                  >
+                    Choose Data File(s)
                   </Button>
-                </DialogClose>
+                  <input
+                    type="file"
+                    ref={pyFileInputRef}
+                    className="hidden"
+                    multiple
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        const files = e.target.files;
+                        setSelectedDataFiles(files);
+                        if (files.length === 1) {
+                          setCopySuccess(
+                            `Selected data file: ${files[0].name}`
+                          );
+                        } else {
+                          setCopySuccess(
+                            `Selected ${files.length} data files.`
+                          );
+                        }
+                        setTimeout(() => setCopySuccess(null), 3000);
+                      } else {
+                        setSelectedDataFiles(null);
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    className="font-mono"
+                    onClick={() => {
+                      if (emlFileInputRef.current) {
+                        emlFileInputRef.current.click();
+                      }
+                    }}
+                  >
+                    <Mail size={14} className="mr-2" /> Upload .eml File
+                  </Button>
+                  <input
+                    type="file"
+                    ref={emlFileInputRef}
+                    className="hidden"
+                    accept=".eml"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        setSelectedEmlFile(e.target.files[0]);
+                        setCopySuccess(
+                          `Selected .eml file: ${e.target.files[0].name}`
+                        );
+                        // TODO: Handle the .eml file (e.g., read its content, store it)
+                        console.log("Selected .eml file:", e.target.files[0]);
+                        setTimeout(() => setCopySuccess(null), 3000);
+                      } else {
+                        setSelectedEmlFile(null);
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="default"
+                    className="font-mono bg-primary hover:bg-primary/90"
+                    onClick={handleRunPyScriptInModal}
+                    disabled={
+                      !isPyodideReady ||
+                      isScriptRunning ||
+                      !selectedDataFiles ||
+                      selectedDataFiles.length === 0 ||
+                      !pyFileContent ||
+                      isUploadingPyodideOutput
+                    }
+                  >
+                    {isScriptRunning ? "Running..." : "Run Script"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="font-mono"
+                    onClick={handleUploadPyodideOutput}
+                    disabled={
+                      !isPyodideReady ||
+                      isScriptRunning ||
+                      !pyodideOutputFilePath ||
+                      !isCodexNodeActive ||
+                      isUploadingPyodideOutput
+                    }
+                  >
+                    {isUploadingPyodideOutput
+                      ? `Uploading ${pyodideOutputUploadProgress}%...`
+                      : "Upload Output"}
+                  </Button>
+                  <DialogClose asChild>
+                    <Button variant="outline" className="font-mono">
+                      Close
+                    </Button>
+                  </DialogClose>
+                </div>
               </DialogFooter>
             </DialogContent>
           </Dialog>
