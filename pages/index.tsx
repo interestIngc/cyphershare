@@ -1172,7 +1172,7 @@ export default function Home() {
       }
 
       // Check for a conventional output file
-      const conventionalOutputPath = "/home/output.txt";
+      const conventionalOutputPath = "/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt";
       if (pyodide.FS.analyzePath(conventionalOutputPath).exists) {
         setPyodideOutput((prev) => [
           ...prev,
