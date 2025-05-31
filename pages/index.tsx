@@ -28,7 +28,9 @@ import {
   Unlock,
   Shield,
   Eye,
-  Mail, // Added Mail icon for .eml
+  Mail,
+  KeyRound, // For secret
+  Send, // For submit proof
 } from "lucide-react";
 import Head from "next/head";
 import { useDropzone } from "react-dropzone";
@@ -51,7 +53,7 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
-import { useCodex, CodexClient, getCodexClient } from "@/hooks/useCodex";
+import { useCodex, getCodexClient } from "@/hooks/useCodex";
 import useWaku, { WakuFileMessage } from "@/hooks/useWaku";
 import axios from "axios";
 import { cn } from "@/lib/utils";
@@ -96,6 +98,7 @@ interface FileItem {
   accessCondition?: string;
   isUploading?: boolean;
   progress?: number;
+  scriptHash?: string; // Added for Python files that have been run
 }
 
 interface ExtendedNodeInfo {
@@ -105,6 +108,18 @@ interface ExtendedNodeInfo {
   status: string;
   uptime: string;
   peers?: number;
+}
+
+// Helper to calculate SHA256 hash
+async function calculateSha256(text: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `0x${hashHex}`;
 }
 
 export default function Home() {
@@ -123,7 +138,8 @@ export default function Home() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [nodeInfo, setNodeInfo] = useState<ExtendedNodeInfo | null>(null);
 
-  const { provider, signer, walletConnected, connectWallet } = useWallet();
+  const { provider, signer, walletConnected, connectWallet, walletAddress } =
+    useWallet(); // Added walletAddress
   const timeInputRef = useRef<HTMLDivElement>(null);
   const useEncryptionInputRef = useRef<HTMLDivElement>(null);
   const [useEncryption, setUseEncryption] = useState(false);
@@ -139,8 +155,20 @@ export default function Home() {
   const [selectedPyFileForView, setSelectedPyFileForView] =
     useState<FileItem | null>(null);
   const pyFileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedEmlFile, setSelectedEmlFile] = useState<File | null>(null); // New state for .eml file
-  const emlFileInputRef = useRef<HTMLInputElement>(null); // New ref for .eml file input
+
+  // NEW: Email proof related state
+  const [computationSecret, setComputationSecret] = useState<string | null>(
+    null
+  );
+  const [isProofSubmissionModalOpen, setIsProofSubmissionModalOpen] =
+    useState(false);
+  const [emailProofSubject, setEmailProofSubject] = useState("");
+  const [emailProofBodyInstruction, setEmailProofBodyInstruction] =
+    useState("");
+  const [selectedEmlFileForProof, setSelectedEmlFileForProof] =
+    useState<File | null>(null);
+  const proofEmlFileInputRef = useRef<HTMLInputElement>(null);
+  const [isSubmittingEmailProof, setIsSubmittingEmailProof] = useState(false);
 
   const [pyodide, setPyodide] = useState<any>(null);
   const [isPyodideReady, setIsPyodideReady] = useState(false);
@@ -166,7 +194,7 @@ export default function Home() {
       console.log("Attempting to load Pyodide...");
       try {
         const pyodideModule = await window.loadPyodide({
-          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/",
+          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/", // Consider v0.26 or latest
         });
         setPyodide(pyodideModule);
         setIsPyodideReady(true);
@@ -210,11 +238,12 @@ export default function Home() {
     } else if (
       pyodide &&
       isPyodideReady &&
-      pyodideLoadingMessage !== "Pyodide is ready."
+      pyodideLoadingMessage !== "Pyodide is ready." &&
+      pyodideLoadingMessage !== "Pyodide loaded successfully." // Add this condition
     ) {
       setPyodideLoadingMessage("Pyodide is ready.");
     }
-  }, [pyodide, isPyodideReady]);
+  }, [pyodide, isPyodideReady, pyodideLoadingMessage]); // Added pyodideLoadingMessage dependency
 
   useEffect(() => {
     if (accessConditionType === "time" && timeInputRef.current) {
@@ -255,7 +284,7 @@ export default function Home() {
   >({});
   const [decryptionError, setDecryptionError] = useState<string | null>(null);
 
-  const ritualId = 6;
+  const ritualId = 6; // Example Ritual ID
 
   const {
     isInit: isTacoInit,
@@ -264,7 +293,7 @@ export default function Home() {
     createConditions,
   } = useTaco({
     provider: provider as ethers.providers.Provider | undefined,
-    domain: domains.TESTNET,
+    domain: domains.TESTNET, // or domains.MAINNET
     ritualId,
   });
 
@@ -274,7 +303,7 @@ export default function Home() {
     [key: string]: {
       progress: number;
       name: string;
-      size: number;
+      size: number; // Keep size in bytes for consistency
       type: string;
       timestamp?: string;
       isEncrypted?: boolean;
@@ -291,10 +320,10 @@ export default function Home() {
     checkNodeStatus: checkCodexStatus,
     error: codexError,
     getNodeInfo,
-    getCodexClient,
+    getCodexClient, // Make sure this is correctly imported/used if needed directly
     testDirectUpload: codexTestUpload,
     downloadFile,
-  } = useCodex(codexNodeUrl);
+  } = useCodex(codexNodeUrl); // Pass initial URL if needed
 
   const [wakuDebugVisible, setWakuDebugVisible] = useState(false);
   const [wakuDebugLogs, setWakuDebugLogs] = useState<
@@ -309,7 +338,7 @@ export default function Home() {
     (type: "info" | "error" | "success", message: string) => {
       setWakuDebugLogs((prev) => [
         { type, message, timestamp: new Date().toLocaleTimeString() },
-        ...prev.slice(0, 19),
+        ...prev.slice(0, 19), // Keep last 20 logs
       ]);
     },
     []
@@ -357,9 +386,9 @@ export default function Home() {
 
       console.log("Received new file from peer:", {
         fileName: fileMessage.fileName,
-        sender: fileMessage.sender,
+        sender: fileMessage.sender, // Log the full sender ID for debugging
         fileId: fileMessage.fileId,
-        timestamp: fileMessage.timestamp,
+        timestamp: fileMessage.timestamp, // This is already a number (Date.now())
         encrypted: fileMessage.isEncrypted,
         accessCondition: fileMessage.accessCondition,
       });
@@ -370,7 +399,7 @@ export default function Home() {
       );
       if (fileExists) {
         addWakuDebugLog("info", `File already exists: ${fileMessage.fileName}`);
-        return;
+        return; // Already have this file
       }
 
       const timestamp = new Date(fileMessage.timestamp).toLocaleString(
@@ -385,9 +414,9 @@ export default function Home() {
       );
 
       const newFile: FileItem = {
-        id: `received-${fileMessage.timestamp}-${fileMessage.fileName}`,
+        id: `received-${fileMessage.timestamp}-${fileMessage.fileName}`, // Unique ID
         name: fileMessage.fileName,
-        size: fileMessage.fileSize,
+        size: fileMessage.fileSize, // Assuming fileSize is in MB from Waku message
         type: fileMessage.fileType,
         timestamp,
         fileId: fileMessage.fileId,
@@ -403,7 +432,7 @@ export default function Home() {
         `Added to received files: ${fileMessage.fileName}`
       );
     },
-    [receivedFiles, sentFiles, addWakuDebugLog]
+    [receivedFiles, sentFiles, addWakuDebugLog] // Add sentFiles to dependencies
   );
 
   const {
@@ -416,8 +445,8 @@ export default function Home() {
     reconnect: reconnectWaku,
   } = useWaku({
     roomId,
-    wakuNodeUrl,
-    wakuNodeType: wakuNodeType as "light" | "relay",
+    wakuNodeUrl, // This would be for a relay node if that mode was fully supported
+    wakuNodeType: wakuNodeType as "light" | "relay", // Cast for now
     onFileReceived: handleFileReceived,
   });
 
@@ -428,7 +457,7 @@ export default function Home() {
       typeof nodeInfo.version === "string" &&
       typeof nodeInfo.status === "string" &&
       typeof nodeInfo.uptime === "string" &&
-      (typeof nodeInfo.id === "string" || nodeInfo.id === undefined) &&
+      (typeof nodeInfo.id === "string" || nodeInfo.id === undefined) && // Allow id to be optional initially
       (typeof nodeInfo.revision === "string" ||
         nodeInfo.revision === undefined) &&
       (typeof nodeInfo.peers === "number" || nodeInfo.peers === undefined)
@@ -440,11 +469,11 @@ export default function Home() {
       const fetchNodeInfo = async () => {
         const info = await getNodeInfo();
         if (info && isValidNodeInfo(info)) setNodeInfo(info);
-        else setNodeInfo(null);
+        else setNodeInfo(null); // Set to null if info is not valid
       };
       fetchNodeInfo();
     } else {
-      setNodeInfo(null);
+      setNodeInfo(null); // Clear node info if not active or loading
     }
   }, [isCodexNodeActive, isCodexLoading, getNodeInfo]);
 
@@ -459,7 +488,8 @@ export default function Home() {
       }
 
       if (useEncryption && !walletConnected) {
-        const connected = await connectWallet();
+        // Try to connect wallet if not already connected for encryption
+        const connected = await connectWallet(); // connectWallet from useWallet
         if (!connected) {
           setUploadError(
             "Please connect your wallet to use encryption features."
@@ -470,16 +500,20 @@ export default function Home() {
       }
 
       acceptedFiles.forEach((file) => {
-        console.log("----------------------------- Processing file...");
-        const fileId = `upload-${Date.now()}-${file.name}`;
+        console.log(
+          "----------------------------- Processing file for upload:",
+          file.name
+        );
+        const fileId = `upload-${Date.now()}-${file.name}`; // Unique key for tracking this upload
 
         setUploadingFiles((prev) => ({
           ...prev,
           [fileId]: {
             progress: 0,
             name: file.name,
-            size: file.size / (1024 * 1024),
+            size: file.size, // Store size in bytes
             type: file.type,
+            // timestamp, isEncrypted, accessCondition will be set after successful upload logic
           },
         }));
 
@@ -490,9 +524,10 @@ export default function Home() {
             let accessConditionDescription = "";
 
             if (useEncryption && walletConnected && signer) {
+              // Ensure signer is available
               try {
                 let accessCondition;
-
+                // ... (rest of your TACo condition logic) ...
                 if (accessConditionType === "positive") {
                   accessCondition = createConditions.positiveBalance();
                   accessConditionDescription = `The account needs to have a positive balance, to be able to decrypt this file`;
@@ -512,6 +547,7 @@ export default function Home() {
                     );
                     setTimeout(() => setUploadError(null), 5000);
                     setUploadingFiles((prev) => {
+                      // Remove from uploading on error
                       const updated = { ...prev };
                       delete updated[fileId];
                       return updated;
@@ -550,7 +586,7 @@ export default function Home() {
                     [encryptedBytes],
                     `${file.name}.enc`,
                     {
-                      type: "application/octet-stream",
+                      type: "application/octet-stream", // Standard for encrypted files
                       lastModified: file.lastModified,
                     }
                   );
@@ -574,11 +610,19 @@ export default function Home() {
                   }`
                 );
                 setTimeout(() => setUploadError(null), 5000);
-                return;
+                // Also remove from uploadingFiles if encryption fails before upload starts
+                setUploadingFiles((prev) => {
+                  const updated = { ...prev };
+                  delete updated[fileId];
+                  return updated;
+                });
+                return; // Stop the upload for this file
               }
             }
 
-            const result = await getCodexClient().uploadFile(
+            // Use the getCodexClient from the hook
+            const client = getCodexClient(); // Assuming useCodex hook provides this
+            const result = await client.uploadFile(
               fileToUpload,
               (progress: number) => {
                 setUploadingFiles((prev) => ({
@@ -590,11 +634,7 @@ export default function Home() {
 
             if (result.success && result.id) {
               const timestamp = new Date().toLocaleString("en-US", {
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
+                /* format options */
               });
               console.log("========== UPLOAD RESULT ==========");
               console.log(JSON.stringify(result, null, 2));
@@ -606,16 +646,16 @@ export default function Home() {
               );
 
               const newFile: FileItem = {
-                id: fileId,
-                name: file.name,
+                id: fileId, // Use the tracking ID
+                name: file.name, // Original file name
                 isEncrypted: isFileEncrypted,
                 accessCondition: isFileEncrypted
                   ? accessConditionDescription
                   : undefined,
-                size: parseFloat((file.size / (1024 * 1024)).toFixed(2)),
-                type: file.type,
+                size: parseFloat((file.size / (1024 * 1024)).toFixed(2)), // Size in MB
+                type: file.type, // Original file type
                 timestamp,
-                fileId: result.id,
+                fileId: result.id, // CID from Codex
               };
               console.log("Adding file to sent files:", newFile);
               setSentFiles((prev) => [newFile, ...prev]);
@@ -623,9 +663,9 @@ export default function Home() {
               if (isWakuConnected) {
                 await sendFileMessage({
                   fileName: file.name,
-                  fileSize: parseFloat((file.size / (1024 * 1024)).toFixed(2)),
+                  fileSize: parseFloat((file.size / (1024 * 1024)).toFixed(2)), // Size in MB
                   fileType: file.type,
-                  fileId: result.id,
+                  fileId: result.id, // CID
                   isEncrypted: isFileEncrypted,
                   accessCondition: isFileEncrypted
                     ? accessConditionDescription
@@ -671,23 +711,26 @@ export default function Home() {
       createConditions,
       windowTimeSeconds,
       encryptDataToBytes,
-      connectWallet,
+      connectWallet, // from useWallet
       nftContractAddress,
     ]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    maxSize: 100 * 1024 * 1024,
+    maxSize: 100 * 1024 * 1024, // 100MB limit
   });
 
   const getFileIcon = (fileType: string) => {
     if (fileType.includes("image")) return <Image size={24} />;
     if (fileType.includes("pdf")) return <FileText size={24} />;
+    if (fileType.includes("python") || fileType.endsWith(".py"))
+      return <Terminal size={24} />; // Icon for Python files
     if (
       fileType.includes("spreadsheet") ||
       fileType.includes("excel") ||
-      fileType.includes("xlsx")
+      fileType.includes("xlsx") ||
+      fileType.includes("csv")
     )
       return <FileText size={24} />;
     if (
@@ -713,6 +756,7 @@ export default function Home() {
     try {
       const textarea = document.createElement("textarea");
       textarea.value = text;
+      // Make the textarea off-screen
       textarea.style.position = "fixed";
       textarea.style.left = "-999999px";
       textarea.style.top = "-999999px";
@@ -728,6 +772,7 @@ export default function Home() {
     }
   };
 
+  // Test function for clipboard copy - can be removed in production
   const testClipboardCopy = (text: string) => {
     const success = copyToClipboard(text);
     if (success) {
@@ -735,7 +780,7 @@ export default function Home() {
       setCopySuccess(`Test text copied to clipboard: ${text}`);
     } else {
       console.error("Failed to copy to clipboard");
-      setUploadError("Failed to copy to clipboard");
+      setUploadError("Failed to copy to clipboard"); // Or a more specific error state
     }
     setTimeout(() => {
       setCopySuccess(null);
@@ -750,7 +795,7 @@ export default function Home() {
       return;
     }
     try {
-      const result = await codexTestUpload();
+      const result = await codexTestUpload(); // Assuming codexTestUpload is from useCodex
       if (result.success) {
         if (result.id)
           setCopySuccess(`Direct upload successful. CID: ${result.id}`);
@@ -784,7 +829,7 @@ export default function Home() {
       addWakuDebugLog("info", "Sending test message via Waku...");
       const timestamp = Date.now();
       const testFileName = `test-message-${timestamp}.txt`;
-      const testFileId = `test-${timestamp}`;
+      const testFileId = `test-${timestamp}`; // This is a placeholder, not a real CID
       addWakuDebugLog(
         "info",
         `Created test message: ${testFileName} (ID: ${testFileId})`
@@ -792,9 +837,9 @@ export default function Home() {
 
       const success = await sendFileMessage({
         fileName: testFileName,
-        fileSize: 0.01,
+        fileSize: 0.01, // MB
         fileType: "text/plain",
-        fileId: testFileId,
+        fileId: testFileId, // Using placeholder ID for test
       });
 
       if (success) {
@@ -826,10 +871,12 @@ export default function Home() {
   };
 
   const handleCopyFileCid = (fileId: string) => {
+    // fileId here is the FileItem.id
     const file =
       sentFiles.find((f) => f.id.toString() === fileId) ||
       receivedFiles.find((f) => f.id.toString() === fileId);
     if (file && file.fileId) {
+      // Check for actual fileId (CID)
       console.log("Copying file CID:", {
         fileId: fileId,
         file: file,
@@ -861,6 +908,7 @@ export default function Home() {
   };
 
   const handleDownloadFile = async (fileId: string) => {
+    // fileId is FileItem.id
     const file =
       sentFiles.find((f) => f.id.toString() === fileId) ||
       receivedFiles.find((f) => f.id.toString() === fileId);
@@ -870,13 +918,14 @@ export default function Home() {
       return;
     }
     if (!file.fileId) {
-      setUploadError("File ID not found");
+      // Check for actual fileId (CID)
+      setUploadError("File ID (CID) not found for download");
       setTimeout(() => setUploadError(null), 5000);
       return;
     }
 
     try {
-      setCopySuccess(`Fetching file metadata...`);
+      setCopySuccess(`Fetching file metadata for ${file.name}...`); // More descriptive
       if (file.isEncrypted) {
         if (!walletConnected || !signer) {
           setUploadError(
@@ -885,12 +934,14 @@ export default function Home() {
           setTimeout(() => setUploadError(null), 5000);
           return;
         }
-        setCopySuccess("File is encrypted, decrypting...");
+        setCopySuccess(
+          `File "${file.name}" is encrypted, preparing for decryption...`
+        );
         setDecryptionInProgress((prev) => ({ ...prev, [file.fileId!]: true }));
         setDecryptionError(null);
 
         setCopySuccess(`Fetching encrypted file (${file.name}) from Codex...`);
-        const encryptedFileResult = await downloadFile(file.fileId);
+        const encryptedFileResult = await downloadFile(file.fileId); // downloadFile is from useCodex
         if (!encryptedFileResult.success || !encryptedFileResult.data) {
           throw new Error(
             encryptedFileResult.error ||
@@ -904,9 +955,8 @@ export default function Home() {
 
         try {
           if (!signer) {
-            setUploadError(
-              "Please go to settings and connect your wallet to decrypt this file"
-            );
+            // Should be caught by walletConnected check, but good to be sure
+            setUploadError("Wallet signer not available for decryption.");
             setTimeout(() => setUploadError(null), 5000);
             return;
           }
@@ -914,18 +964,18 @@ export default function Home() {
           const decryptedBytes = await decryptDataFromBytes(
             encryptedBytes,
             signer
-          );
+          ); // from useTaco
 
           if (decryptedBytes) {
             const originalBytes = new Uint8Array(decryptedBytes);
-            setCopySuccess(`Downloading ${file.name}...`);
+            setCopySuccess(`Downloading decrypted ${file.name}...`);
             const blob = new Blob([originalBytes], {
               type: file.type || "application/octet-stream",
             });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = file.name;
+            a.download = file.name; // Use original file name
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -956,8 +1006,9 @@ export default function Home() {
           }));
         }
       } else {
-        setCopySuccess(`Fetching file metadata...`);
-        const result = await downloadFile(file.fileId);
+        // File is not encrypted
+        setCopySuccess(`Fetching file metadata for ${file.name}...`);
+        const result = await downloadFile(file.fileId); // downloadFile from useCodex
         if (!result.success || !result.data || !result.metadata) {
           throw new Error(result.error || "Failed to download file");
         }
@@ -983,6 +1034,7 @@ export default function Home() {
       console.error("Error downloading file:", error);
       let errorMessage = "Failed to download file";
       if (axios.isAxiosError(error)) {
+        // Check if it's an Axios error if you use axios in downloadFile
         errorMessage += `: ${error.response?.status || ""} ${error.message}`;
         console.error("API error details:", error.response?.data);
       } else if (error instanceof Error) {
@@ -993,6 +1045,7 @@ export default function Home() {
     }
   };
 
+  // --- MODIFIED: Pyodide Modal & Email Proof Logic ---
   const handleViewPyFile = async (fileItemId: string) => {
     const file = receivedFiles.find((f) => f.id.toString() === fileItemId);
     if (!file || !file.fileId) {
@@ -1013,13 +1066,14 @@ export default function Home() {
       setPyodideOutput([]);
       setSelectedDataFiles(null);
       setPyodideOutputFilePath(null);
-      setSelectedEmlFile(null); // Reset .eml file when opening modal for a new Py file
+      setComputationSecret(null); // Reset secret when opening modal
+      setSelectedEmlFileForProof(null); // Reset EML for proof
       if (pyFileInputRef.current) pyFileInputRef.current.value = "";
-      if (emlFileInputRef.current) emlFileInputRef.current.value = "";
 
       let fileDataBlob: Blob | undefined;
 
       if (file.isEncrypted) {
+        // ... (existing decryption logic for viewing) ...
         if (!walletConnected || !signer) {
           setUploadError("Connect your wallet to view encrypted Python files.");
           setTimeout(() => setUploadError(null), 5000);
@@ -1029,7 +1083,6 @@ export default function Home() {
         }
         setDecryptionInProgress((prev) => ({ ...prev, [file.fileId!]: true }));
         setDecryptionError(null);
-
         const encryptedFileResult = await downloadFile(file.fileId);
         if (!encryptedFileResult.success || !encryptedFileResult.data) {
           throw new Error(
@@ -1037,11 +1090,9 @@ export default function Home() {
               "Failed to download encrypted file data for viewing"
           );
         }
-
         const encryptedArrayBuffer =
           await encryptedFileResult.data.arrayBuffer();
         const encryptedBytes = new Uint8Array(encryptedArrayBuffer);
-
         try {
           const decryptedBytes = await decryptDataFromBytes(
             encryptedBytes,
@@ -1055,6 +1106,7 @@ export default function Home() {
             throw new Error("Decryption returned no data for viewing");
           }
         } catch (decryptErr) {
+          // ... (error handling) ...
           const errMsg =
             decryptErr instanceof Error
               ? decryptErr.message
@@ -1114,23 +1166,22 @@ export default function Home() {
     if (!selectedPyFileForView || !pyFileContent) {
       setPyodideOutput((prev) => [
         ...prev,
-        "Error: No Python script content loaded for execution.",
+        "Error: No Python script content loaded.",
       ]);
       return;
     }
     if (!selectedDataFiles || selectedDataFiles.length === 0) {
-      setPyodideOutput((prev) => [
-        ...prev,
-        "Error: No data files selected to run the script on.",
-      ]);
+      setPyodideOutput((prev) => [...prev, "Error: No data files selected."]);
       return;
     }
 
     setIsScriptRunning(true);
-    setPyodideOutputFilePath(null); // Reset any previous output file path
+    setPyodideOutputFilePath(null);
+    setComputationSecret(null); // Reset secret before new run
     setPyodideOutput([`Running script: ${selectedPyFileForView.name}...`]);
 
     try {
+      // ... (existing Pyodide file loading and execution logic) ...
       setPyodideOutput((prev) => [
         ...prev,
         "Loading data files into virtual environment...",
@@ -1138,7 +1189,7 @@ export default function Home() {
       for (const file of Array.from(selectedDataFiles)) {
         const arrayBuffer = await file.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
-        const filePath = `/home/${file.name}`;
+        const filePath = `/home/${file.name}`; // Pyodide virtual FS path
         try {
           pyodide.FS.mkdir("/home");
         } catch (e) {
@@ -1176,7 +1227,36 @@ export default function Home() {
         setPyodideOutput((prev) => [...prev, `Result: ${String(result)}`]);
       }
 
-      // Check for a conventional output file
+      // --- NEW: Secret Generation ---
+      const newSecret = `secret_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 15)}`;
+      setComputationSecret(newSecret);
+      // Store script hash associated with this run, if the file item doesn't have it yet
+      if (selectedPyFileForView && !selectedPyFileForView.scriptHash) {
+        const hash = await calculateSha256(pyFileContent);
+        setSelectedPyFileForView((prev) =>
+          prev ? { ...prev, scriptHash: hash } : null
+        );
+      }
+      setPyodideOutput((prev) => [
+        ...prev,
+        `------------------------------------------------------------`,
+      ]);
+      setPyodideOutput((prev) => [
+        ...prev,
+        `✅ COMPUTATION SECRET GENERATED: ${newSecret}`,
+      ]);
+      setPyodideOutput((prev) => [
+        ...prev,
+        `   Keep this secret safe. You'll need it for the email proof.`,
+      ]);
+      setPyodideOutput((prev) => [
+        ...prev,
+        `------------------------------------------------------------`,
+      ]);
+
+      // Check for conventional output file (same as before)
       const conventionalOutputPath =
         "/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt";
       if (pyodide.FS.analyzePath(conventionalOutputPath).exists) {
@@ -1184,7 +1264,7 @@ export default function Home() {
           ...prev,
           `Output file detected: ${conventionalOutputPath}`,
         ]);
-        setPyodideOutputFilePath(conventionalOutputPath); // Enable upload button
+        setPyodideOutputFilePath(conventionalOutputPath);
         const outputContent = pyodide.FS.readFile(conventionalOutputPath, {
           encoding: "utf8",
         });
@@ -1197,7 +1277,7 @@ export default function Home() {
       } else {
         setPyodideOutput((prev) => [
           ...prev,
-          `No conventional output file (${conventionalOutputPath}) found after script execution.`,
+          `No conventional output file (${conventionalOutputPath}) found.`,
         ]);
         setPyodideOutputFilePath(null);
       }
@@ -1206,13 +1286,117 @@ export default function Home() {
       const errorMsg = error instanceof Error ? error.message : String(error);
       setPyodideOutput((prev) => [...prev, `Execution Error: ${errorMsg}`]);
       setPyodideOutputFilePath(null);
+      setComputationSecret(null); // Clear secret on error
     } finally {
       setIsScriptRunning(false);
-      // Do NOT clean up input data files from Pyodide FS here, user might want to re-run or upload different output
-      // Cleanup of /home/output.txt might be done before next run if needed or after successful upload.
     }
   };
 
+  const handleOpenProofSubmissionModal = async () => {
+    if (
+      !selectedPyFileForView ||
+      !pyFileContent ||
+      !computationSecret ||
+      !walletAddress
+    ) {
+      setUploadError(
+        "Missing data for proof submission. Ensure script ran, secret is generated, and wallet is connected."
+      );
+      setTimeout(() => setUploadError(null), 5000);
+      return;
+    }
+    const scriptHash = await calculateSha256(pyFileContent);
+    // Update the FileItem with the scriptHash if not already set
+    setSelectedPyFileForView((prev) => (prev ? { ...prev, scriptHash } : null));
+
+    const subject = `Computation Proof: ScriptHash=${scriptHash} for Wallet=${walletAddress}`;
+    const bodyInstruction = `Please ensure the BODY of your email contains ONLY the following secret:\n\n${computationSecret}`;
+
+    setEmailProofSubject(subject);
+    setEmailProofBodyInstruction(bodyInstruction);
+    setSelectedEmlFileForProof(null); // Reset selected .eml file
+    setIsProofSubmissionModalOpen(true);
+  };
+
+  const handleSubmitEmailProof = async () => {
+    if (
+      !selectedEmlFileForProof ||
+      !selectedPyFileForView?.scriptHash ||
+      !computationSecret ||
+      !pyFileContent
+    ) {
+      setUploadError(
+        "Missing required data for proof submission: .eml file, script hash, or secret."
+      );
+      setTimeout(() => setUploadError(null), 5000);
+      return;
+    }
+    if (!walletConnected || !walletAddress) {
+      setUploadError("Please connect your wallet before submitting proof.");
+      setTimeout(() => setUploadError(null), 5000);
+      return;
+    }
+
+    setIsSubmittingEmailProof(true);
+    setUploadError(null);
+    setCopySuccess(null);
+
+    try {
+      const emlContent = await selectedEmlFileForProof.text();
+
+      const payload = {
+        emlMimeContent: emlContent,
+        originalScriptContent: pyFileContent, // Send full script content
+        workerProvidedSecret: computationSecret,
+        // The payoutWallet will be extracted from the email subject by the prover
+      };
+
+      // console.log("Submitting to backend /api/submit-email-computation-proof:", payload);
+
+      const response = await axios.post(
+        "/api/submit-email-computation-proof",
+        payload,
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+
+      if (response.data.success) {
+        setCopySuccess(
+          `Email proof submitted successfully! Tx: ${
+            response.data.transactionHash
+              ? response.data.transactionHash.substring(0, 10) + "..."
+              : "N/A"
+          }`
+        );
+        setIsProofSubmissionModalOpen(false);
+        // Optionally reset relevant states
+        setComputationSecret(null);
+        setSelectedEmlFileForProof(null);
+      } else {
+        setUploadError(
+          `Proof submission failed: ${
+            response.data.error || "Unknown backend error"
+          }`
+        );
+      }
+    } catch (error: any) {
+      console.error("Error submitting email proof:", error);
+      const errMsg =
+        error.response?.data?.error ||
+        error.message ||
+        "An unknown error occurred during proof submission.";
+      setUploadError(`Proof submission error: ${errMsg}`);
+    } finally {
+      setIsSubmittingEmailProof(false);
+      setTimeout(() => {
+        setUploadError(null);
+        setCopySuccess(null);
+      }, 7000);
+    }
+  };
+
+  // ... (rest of your existing handleUploadPyodideOutput, handleCodexUrlChange, handleSaveConfig, etc.)
   const handleUploadPyodideOutput = async () => {
     if (
       !pyodide ||
@@ -1240,30 +1424,24 @@ export default function Home() {
       });
       const outputFileBlob = new Blob([fileContentUint8Array], {
         type: "application/octet-stream",
-      }); // Or text/plain if always text
+      });
       const outputFile = new globalThis.File([outputFileBlob], outputFileName, {
         type: outputFileBlob.type,
       });
 
-      const result = await getCodexClient().uploadFile(
-        outputFile,
-        (progress: number) => {
-          setPyodideOutputUploadProgress(progress);
-        }
-      );
+      const client = getCodexClient();
+      const result = await client.uploadFile(outputFile, (progress: number) => {
+        setPyodideOutputUploadProgress(progress);
+      });
 
       if (result.success && result.id) {
         const timestamp = new Date().toLocaleString("en-US", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
+          /* format options */
         });
         const newFile: FileItem = {
           id: `pyodide-output-${Date.now()}`,
           name: outputFile.name,
-          isEncrypted: false, // Pyodide output is not encrypted by default here
+          isEncrypted: false,
           size: parseFloat((outputFile.size / (1024 * 1024)).toFixed(2)),
           type: outputFile.type,
           timestamp,
@@ -1286,9 +1464,6 @@ export default function Home() {
             isEncrypted: false,
           });
         }
-        // Optionally, clear the output file from Pyodide FS after successful upload
-        // pyodide.FS.unlink(pyodideOutputFilePath);
-        // setPyodideOutputFilePath(null);
       } else {
         setUploadError(
           `Failed to upload ${outputFile.name}: ${
@@ -1319,15 +1494,20 @@ export default function Home() {
       codexEndpointType === "local" &&
       (!codexNodeUrl.trim() || !codexNodeUrl.startsWith("http"))
     ) {
-      alert("Please enter a valid URL starting with http:// or https://");
+      alert(
+        "Please enter a valid URL starting with http:// or https:// for local Codex node."
+      );
       return;
     }
     setIsSaving(true);
+    // Determine the URL to use based on endpoint type
     const urlToUse =
       codexEndpointType === "remote"
-        ? process.env.NEXT_PUBLIC_CODEX_REMOTE_API_URL || ""
+        ? process.env.NEXT_PUBLIC_CODEX_REMOTE_API_URL || "" // Fallback for remote
         : codexNodeUrl;
+
     updateCodexConfig(urlToUse, codexEndpointType);
+    // Waku config update would go here if useWaku hook supported it directly
     setSaveSuccess(true);
     setTimeout(() => {
       setIsSaving(false);
@@ -1345,16 +1525,35 @@ export default function Home() {
   };
 
   const renderNodeInfo = () => {
-    if (!nodeInfo || !isValidNodeInfo(nodeInfo)) return null;
+    if (!nodeInfo || !isValidNodeInfo(nodeInfo)) return null; // Or some placeholder
     return (
-      <div className="p-4 bg-muted rounded-lg">
-        <p className="text-sm">Node ID: {nodeInfo.id}</p>
-        <p className="text-sm">Version: {nodeInfo.version}</p>
-        <p className="text-sm">Revision: {nodeInfo.revision ?? "N/A"}</p>
-        <p className="text-sm">Status: {nodeInfo.status}</p>
-        <p className="text-sm">Uptime: {nodeInfo.uptime}</p>
+      <div className="p-4 bg-muted rounded-lg text-xs font-mono mt-4 border border-border">
+        <h4 className="font-semibold mb-2 text-primary/90">CODEX_NODE_INFO:</h4>
+        <p>
+          <span className="text-muted-foreground">ID:</span>{" "}
+          {nodeInfo.id || "N/A"}
+        </p>
+        <p>
+          <span className="text-muted-foreground">Version:</span>{" "}
+          {nodeInfo.version}
+        </p>
+        <p>
+          <span className="text-muted-foreground">Revision:</span>{" "}
+          {nodeInfo.revision ?? "N/A"}
+        </p>
+        <p>
+          <span className="text-muted-foreground">Status:</span>{" "}
+          {nodeInfo.status}
+        </p>
+        <p>
+          <span className="text-muted-foreground">Uptime:</span>{" "}
+          {nodeInfo.uptime}
+        </p>
         {nodeInfo.peers !== undefined && (
-          <p className="text-sm">Connected Peers: {nodeInfo.peers}</p>
+          <p>
+            <span className="text-muted-foreground">Peers:</span>{" "}
+            {nodeInfo.peers}
+          </p>
         )}
       </div>
     );
@@ -1362,12 +1561,14 @@ export default function Home() {
 
   const handleEndpointTypeChange = (type: "remote" | "local") => {
     setCodexEndpointType(type);
+    // Automatically update the URL input when type changes
     const newUrl =
       type === "remote"
         ? process.env.NEXT_PUBLIC_CODEX_REMOTE_API_URL || ""
         : process.env.NEXT_PUBLIC_CODEX_LOCAL_API_URL ||
           "http://localhost:8080/api/codex";
     setCodexNodeUrl(newUrl);
+    // Optionally, immediately apply this change or wait for save
     updateCodexConfig(newUrl, type);
   };
 
@@ -1377,60 +1578,37 @@ export default function Home() {
         className={`flex min-h-screen flex-col ${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
         <Head>
-          <title>Codex File Transfer</title>
+          <title>CypherShare - Decentralized File Sharing & Computation</title>
           <meta
             name="description"
-            content="Simple filesharing application that uses Codex, Waku and TACo"
+            content="Securely share files and prove computations using Codex, Waku, TACo, and vLayer Email Proofs."
           />
-          <meta property="og:title" content="CypherShare" />
-          <meta
-            property="og:description"
-            content="Simple filesharing application that uses Codex, Waku and TACo"
-          />
-          <meta property="og:type" content="website" />
-          <meta
-            property="og:image"
-            content="https://opengraph.b-cdn.net/production/images/62d96fb5-2821-4691-a7f8-41b240b48284.png?token=fhDGsFiV6qME7vI2E96jcePGsGdoScCjHIGxDzzJ8aE&height=630&width=1200&expires=33283614304"
-          />
-          <meta
-            name="twitter:image"
-            content="https://opengraph.b-cdn.net/production/images/62d96fb5-2821-4691-a7f8-41b240b48284.png?token=fhDGsFiV6qME7vI2E96jcePGsGdoScCjHIGxDzzJ8aE&height=630&width=1200&expires=33283614304"
-          />
-          <meta name="twitter:card" content="summary" />
-          <meta name="twitter:title" content="CypherShare" />
-          <meta
-            name="twitter:description"
-            content="Simple filesharing application that uses Codex, Waku and TACo"
-          />
-          <meta
-            name="keywords"
-            content="Codex, Waku, file sharing, p2p, decentralized, cypherpunk, TACo"
-          />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          {/* ... other meta tags ... */}
           <link rel="icon" href="/favicon.ico" />
         </Head>
 
+        {/* ... existing copySuccess and uploadError toasts ... */}
         {copySuccess && (
           <div className="fixed bottom-4 right-4 p-3 bg-green-500/20 border border-green-500/30 rounded-md shadow-lg z-50 max-w-md terminal-glow">
             <p className="text-xs text-green-500 font-mono flex items-center gap-1">
-              <Check size={12} />
-              {copySuccess}
+              <Check size={12} /> {copySuccess}
             </p>
           </div>
         )}
         {uploadError && (
           <div className="fixed bottom-4 right-4 p-3 bg-amber-600/20 border border-amber-600/30 rounded-md shadow-lg z-50 max-w-md terminal-glow">
             <p className="text-xs text-amber-600/90 font-mono flex items-center gap-1">
-              <AlertCircle size={12} />
-              {uploadError}
+              <AlertCircle size={12} /> {uploadError}
             </p>
           </div>
         )}
 
+        {/* Pyodide Modal (View & Run Script) */}
         {isViewPyModalOpen && selectedPyFileForView && (
           <Dialog
             open={isViewPyModalOpen}
             onOpenChange={(isOpen) => {
+              /* ... existing close logic ... */
               setIsViewPyModalOpen(isOpen);
               if (!isOpen) {
                 setPyFileContent("");
@@ -1439,27 +1617,27 @@ export default function Home() {
                 setSelectedDataFiles(null);
                 setPyodideOutputFilePath(null);
                 if (pyFileInputRef.current) pyFileInputRef.current.value = "";
-                setSelectedEmlFile(null); // Reset .eml file on modal close
-                if (emlFileInputRef.current) emlFileInputRef.current.value = ""; // Reset .eml file input on modal close
+                setComputationSecret(null); // Reset secret on modal close
+                setSelectedEmlFileForProof(null);
               }
             }}
           >
             <DialogContent className="sm:max-w-[700px] md:max-w-[900px] lg:max-w-[1100px] h-[90vh] flex flex-col bg-card border-border">
               <DialogHeader className="border-b border-border pb-3">
                 <DialogTitle className="font-mono text-primary">
-                  View & Run: {selectedPyFileForView.name}
+                  Run Script: {selectedPyFileForView.name}
                 </DialogTitle>
                 <DialogDescription className="font-mono text-muted-foreground">
-                  View the Python script. Select local data file(s) and run the
-                  script in a sandboxed Pyodide environment. Upload an .eml file
-                  to prove computation.
+                  Execute the Python script in a sandboxed Pyodide environment.
                 </DialogDescription>
               </DialogHeader>
 
+              {/* Script Content & Output Panes */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow overflow-hidden min-h-0">
+                {/* Script Content Pane */}
                 <div className="flex flex-col overflow-hidden border border-input rounded-md p-1 bg-background">
                   <h3 className="text-sm font-mono text-center py-1 text-primary/80">
-                    Script Content
+                    Script_Content
                   </h3>
                   <div className="flex-grow overflow-y-auto p-1">
                     <pre className="text-xs font-mono whitespace-pre-wrap break-all p-2 text-foreground">
@@ -1467,12 +1645,13 @@ export default function Home() {
                     </pre>
                   </div>
                 </div>
-
+                {/* Execution Output Pane */}
                 <div className="flex flex-col overflow-hidden border border-input rounded-md p-1 bg-background">
                   <h3 className="text-sm font-mono text-center py-1 text-primary/80">
-                    Execution Output & Logs
+                    Execution_Output_&_Logs
                   </h3>
                   <div className="flex-grow overflow-y-auto p-1 mb-2 text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded min-h-[100px]">
+                    {/* ... Pyodide loading and output messages ... */}
                     {pyodideLoadingMessage && !isPyodideReady && (
                       <p className="p-2 text-amber-500">
                         {pyodideLoadingMessage}
@@ -1493,6 +1672,8 @@ export default function Home() {
                           line.startsWith("[stderr]") ||
                           line.startsWith("Execution Error:")
                             ? "text-destructive"
+                            : line.includes("COMPUTATION SECRET GENERATED")
+                            ? "text-green-400 font-bold"
                             : "text-foreground/80"
                         }`}
                       >
@@ -1520,17 +1701,12 @@ export default function Home() {
                     : "No data files selected"}
                   {pyodideOutputFilePath &&
                     ` | Output: ${pyodideOutputFilePath.split("/").pop()}`}
-                  {selectedEmlFile && ` | EML: ${selectedEmlFile.name}`}
                 </div>
                 <div className="flex gap-2 flex-wrap justify-end">
                   <Button
                     variant="outline"
                     className="font-mono"
-                    onClick={() => {
-                      if (pyFileInputRef.current) {
-                        pyFileInputRef.current.click();
-                      }
-                    }}
+                    onClick={() => pyFileInputRef.current?.click()}
                   >
                     Choose Data File(s)
                   </Button>
@@ -1540,54 +1716,22 @@ export default function Home() {
                     className="hidden"
                     multiple
                     onChange={(e) => {
+                      /* ... existing logic ... */
                       if (e.target.files && e.target.files.length > 0) {
                         const files = e.target.files;
                         setSelectedDataFiles(files);
-                        if (files.length === 1) {
-                          setCopySuccess(
-                            `Selected data file: ${files[0].name}`
-                          );
-                        } else {
-                          setCopySuccess(
-                            `Selected ${files.length} data files.`
-                          );
-                        }
+                        setCopySuccess(
+                          files.length === 1
+                            ? `Selected data file: ${files[0].name}`
+                            : `Selected ${files.length} data files.`
+                        );
                         setTimeout(() => setCopySuccess(null), 3000);
                       } else {
                         setSelectedDataFiles(null);
                       }
                     }}
                   />
-                  <Button
-                    variant="outline"
-                    className="font-mono"
-                    onClick={() => {
-                      if (emlFileInputRef.current) {
-                        emlFileInputRef.current.click();
-                      }
-                    }}
-                  >
-                    <Mail size={14} className="mr-2" /> Upload .eml File
-                  </Button>
-                  <input
-                    type="file"
-                    ref={emlFileInputRef}
-                    className="hidden"
-                    accept=".eml"
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files.length > 0) {
-                        setSelectedEmlFile(e.target.files[0]);
-                        setCopySuccess(
-                          `Selected .eml file: ${e.target.files[0].name}`
-                        );
-                        // TODO: Handle the .eml file (e.g., read its content, store it)
-                        console.log("Selected .eml file:", e.target.files[0]);
-                        setTimeout(() => setCopySuccess(null), 3000);
-                      } else {
-                        setSelectedEmlFile(null);
-                      }
-                    }}
-                  />
+
                   <Button
                     variant="default"
                     className="font-mono bg-primary hover:bg-primary/90"
@@ -1603,22 +1747,37 @@ export default function Home() {
                   >
                     {isScriptRunning ? "Running..." : "Run Script"}
                   </Button>
-                  <Button
-                    variant="secondary"
-                    className="font-mono"
-                    onClick={handleUploadPyodideOutput}
-                    disabled={
-                      !isPyodideReady ||
-                      isScriptRunning ||
-                      !pyodideOutputFilePath ||
-                      !isCodexNodeActive ||
-                      isUploadingPyodideOutput
-                    }
-                  >
-                    {isUploadingPyodideOutput
-                      ? `Uploading ${pyodideOutputUploadProgress}%...`
-                      : "Upload Output"}
-                  </Button>
+
+                  {pyodideOutputFilePath && (
+                    <Button
+                      variant="secondary"
+                      className="font-mono"
+                      onClick={handleUploadPyodideOutput}
+                      disabled={
+                        !isPyodideReady ||
+                        isScriptRunning ||
+                        !isCodexNodeActive ||
+                        isUploadingPyodideOutput
+                      }
+                    >
+                      {isUploadingPyodideOutput
+                        ? `Uploading ${pyodideOutputUploadProgress}%...`
+                        : "Upload Output"}
+                    </Button>
+                  )}
+
+                  {computationSecret &&
+                    selectedPyFileForView && ( // Show button if secret is generated
+                      <Button
+                        variant="destructive"
+                        className="font-mono"
+                        onClick={handleOpenProofSubmissionModal}
+                        disabled={isSubmittingEmailProof || !walletConnected}
+                      >
+                        <Mail size={14} className="mr-2" /> Submit Email Proof
+                      </Button>
+                    )}
+
                   <DialogClose asChild>
                     <Button variant="outline" className="font-mono">
                       Close
@@ -1630,8 +1789,159 @@ export default function Home() {
           </Dialog>
         )}
 
+        {/* NEW: Email Proof Submission Modal */}
+        {isProofSubmissionModalOpen && (
+          <Dialog
+            open={isProofSubmissionModalOpen}
+            onOpenChange={(isOpen) => {
+              setIsProofSubmissionModalOpen(isOpen);
+              if (!isOpen) {
+                setSelectedEmlFileForProof(null); // Reset EML file on close
+                if (proofEmlFileInputRef.current)
+                  proofEmlFileInputRef.current.value = "";
+              }
+            }}
+          >
+            <DialogContent className="sm:max-w-lg bg-card border-border">
+              <DialogHeader className="border-b border-border pb-3">
+                <DialogTitle className="font-mono text-primary flex items-center gap-2">
+                  <Mail size={18} />
+                  Submit Computation Email Proof
+                </DialogTitle>
+                <DialogDescription className="font-mono text-muted-foreground">
+                  To finalize your computation claim, please prepare and upload
+                  an .eml file.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4 text-sm font-mono">
+                <p className="text-foreground/90">
+                  1. <strong className="text-primary">Compose an Email:</strong>
+                </p>
+                <div className="ml-4 p-3 bg-muted/50 border border-input rounded-md space-y-1">
+                  <p>
+                    <strong className="text-muted-foreground">From:</strong>{" "}
+                    Your DKIM-verifiable email address.
+                  </p>
+                  <p>
+                    <strong className="text-muted-foreground">To:</strong> (Can
+                    be yourself or any address, you'll download the .eml)
+                  </p>
+                  <div>
+                    <strong className="text-muted-foreground">
+                      Subject (Exact):
+                    </strong>
+                    <div className="mt-1 p-2 bg-background border border-input rounded text-xs text-primary break-all flex items-center gap-2">
+                      <span>{emailProofSubject}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => {
+                          copyToClipboard(emailProofSubject);
+                          setCopySuccess("Subject copied!");
+                          setTimeout(() => setCopySuccess(null), 1500);
+                        }}
+                      >
+                        <Copy size={12} />
+                      </Button>
+                    </div>
+                  </div>
+                  <div>
+                    <strong className="text-muted-foreground">
+                      Body (Exact - Plain Text):
+                    </strong>
+                    <div className="mt-1 p-2 bg-background border border-input rounded text-xs text-primary break-all flex items-center gap-2">
+                      <span>{computationSecret}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => {
+                          copyToClipboard(computationSecret || "");
+                          setCopySuccess("Secret copied!");
+                          setTimeout(() => setCopySuccess(null), 1500);
+                        }}
+                      >
+                        <Copy size={12} />
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
+                      {emailProofBodyInstruction
+                        .split("\n")
+                        .slice(1)
+                        .join("\n")}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-foreground/90">
+                  2.{" "}
+                  <strong className="text-primary">
+                    Send & Download .eml:
+                  </strong>{" "}
+                  Send the email, then download it as an `.eml` file from your
+                  sent folder or inbox (look for "Show original", "Download
+                  message", or "Save as").
+                </p>
+                <p className="text-foreground/90">
+                  3. <strong className="text-primary">Upload .eml File:</strong>
+                </p>
+                <div className="ml-4">
+                  <Input
+                    type="file"
+                    accept=".eml"
+                    ref={proofEmlFileInputRef}
+                    className="font-mono text-sm file:text-primary file:font-mono"
+                    onChange={(e) =>
+                      setSelectedEmlFileForProof(
+                        e.target.files ? e.target.files[0] : null
+                      )
+                    }
+                  />
+                  {selectedEmlFileForProof && (
+                    <p className="text-xs text-green-400 mt-1">
+                      Selected: {selectedEmlFileForProof.name}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <DialogFooter className="mt-2 pt-3 border-t border-border">
+                <Button
+                  variant="outline"
+                  className="font-mono"
+                  onClick={() => setIsProofSubmissionModalOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="font-mono"
+                  onClick={handleSubmitEmailProof}
+                  disabled={
+                    !selectedEmlFileForProof ||
+                    isSubmittingEmailProof ||
+                    !walletConnected
+                  }
+                >
+                  {isSubmittingEmailProof ? (
+                    <span className="flex items-center gap-2">
+                      <span className="h-4 w-4 rounded-full border-2 border-t-transparent border-current animate-spin"></span>
+                      Submitting...
+                    </span>
+                  ) : (
+                    <>
+                      <Send size={14} className="mr-2" /> Submit Proof
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* Main application layout */}
         <main className="flex-1 flex flex-col p-4 md:p-8 relative z-0">
           <div className="w-full max-w-5xl mx-auto flex flex-col">
+            {/* ... existing header and room ID section ... */}
             <div className="flex flex-col md:flex-row items-center justify-between mb-4 pb-4 gap-4">
               <div className="flex items-center gap-3 group md:w-1/4">
                 <div className="p-2 rounded-lg bg-primary/15 shadow-sm group-hover:bg-primary/20 transition-all duration-300 border border-primary/10">
@@ -1740,17 +2050,19 @@ export default function Home() {
                     </button>
                   </SheetTrigger>
                   <SheetContent side="right" className="p-5 flex flex-col">
+                    {/* ... existing settings sheet content ... */}
                     <div className="absolute inset-0 pointer-events-none opacity-10 bg-scanline"></div>
                     <SheetHeader className="px-1 pb-4 mb-6 border-b border-border">
                       <SheetTitle className="text-xl font-mono">
                         SYSTEM_CONFIG
                       </SheetTitle>
                       <SheetDescription className="text-sm text-muted-foreground font-mono">
-                        Configure Codex and Waku settings
+                        Configure Codex, Waku and TACo settings
                       </SheetDescription>
                     </SheetHeader>
 
                     <div className="space-y-8 px-1 flex-1 overflow-y-auto">
+                      {/* Codex Settings */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 justify-between">
                           <div className="flex items-center gap-2">
@@ -1779,6 +2091,7 @@ export default function Home() {
                           )}
                         </div>
                         <div className="space-y-4 pl-2 ml-2 border-l border-border">
+                          {/* Endpoint Type Tabs */}
                           <div className="space-y-2">
                             <label className="text-sm font-medium font-mono">
                               ENDPOINT_TYPE
@@ -1804,12 +2117,13 @@ export default function Home() {
                             {codexEndpointType === "remote" && (
                               <div className="mt-2 p-2 bg-primary/10 border border-primary/20 rounded-md">
                                 <p className="text-xs text-primary/90 font-mono flex items-center gap-1">
-                                  <Info size={12} />
-                                  Use local Codex node for peak decentralization
+                                  <Info size={12} /> Use local Codex node for
+                                  peak decentralization
                                 </p>
                               </div>
                             )}
                           </div>
+                          {/* API Endpoint Input */}
                           <div className="space-y-2">
                             <label
                               htmlFor="codex-url"
@@ -1934,8 +2248,7 @@ export default function Home() {
                             )}
                             {codexError && (
                               <p className="text-xs text-amber-600/90 font-mono mt-1 flex items-center gap-1">
-                                <AlertCircle size={12} />
-                                Error: {codexError}
+                                <AlertCircle size={12} /> Error: {codexError}
                               </p>
                             )}
                             {!isCodexNodeActive &&
@@ -1949,9 +2262,8 @@ export default function Home() {
                             {!isCodexNodeActive && !isCodexLoading && (
                               <div className="mt-2 p-2 bg-amber-600/20 border border-amber-600/30 rounded-md">
                                 <p className="text-xs text-amber-600/90 font-mono flex items-center gap-1">
-                                  <AlertCircle size={12} />
-                                  Turn off adblockers to avoid Codex node
-                                  detection issues
+                                  <AlertCircle size={12} /> Turn off adblockers
+                                  to avoid Codex node detection issues
                                 </p>
                               </div>
                             )}
@@ -1967,18 +2279,18 @@ export default function Home() {
                                   <p className="text-xs font-mono flex items-center justify-between">
                                     <span className="text-muted-foreground">
                                       ID:
-                                    </span>
+                                    </span>{" "}
                                     <span
                                       className="text-primary/80 truncate max-w-[180px]"
                                       title={nodeInfo.id}
                                     >
-                                      {nodeInfo.id}
+                                      {nodeInfo.id || "N/A"}
                                     </span>
                                   </p>
                                   <p className="text-xs font-mono flex items-center justify-between">
                                     <span className="text-muted-foreground">
                                       VERSION:
-                                    </span>
+                                    </span>{" "}
                                     <span className="text-primary/80">
                                       {nodeInfo.version} (
                                       {nodeInfo.revision ?? "N/A"})
@@ -1991,6 +2303,7 @@ export default function Home() {
                         </div>
                       </div>
 
+                      {/* Waku Settings */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 justify-between">
                           <div className="flex items-center gap-2">
@@ -2021,11 +2334,12 @@ export default function Home() {
                           ) : (
                             <div
                               className="w-2 h-2 rounded-full bg-primary/80"
-                              title="Using relay node"
+                              title="Using relay node (config only)"
                             ></div>
                           )}
                         </div>
                         <div className="space-y-4 pl-2 ml-2 border-l border-border">
+                          {/* Node Type Tabs */}
                           <div className="space-y-2">
                             <label className="text-sm font-medium font-mono">
                               NODE_TYPE
@@ -2039,30 +2353,32 @@ export default function Home() {
                                 <TabsTrigger value="light">
                                   LIGHT_NODE
                                 </TabsTrigger>
-                                <TabsTrigger value="relay">
+                                <TabsTrigger value="relay" disabled>
                                   RELAY_NODE
-                                </TabsTrigger>
+                                </TabsTrigger>{" "}
+                                {/* Relay might be WIP */}
                               </TabsList>
                             </Tabs>
                             <p className="text-xs text-muted-foreground font-mono">
-                              Select Waku node type
+                              Select Waku node type (Light node recommended)
                             </p>
                             {wakuNodeType === "relay" && (
                               <div className="mt-2 p-2 bg-amber-600/20 border border-amber-600/30 rounded-md">
                                 <p className="text-xs text-amber-600/90 font-mono flex items-center gap-1">
-                                  <AlertCircle size={12} />
-                                  Relay node integration is not available yet
+                                  <AlertCircle size={12} /> Relay node
+                                  integration is not available yet
                                 </p>
                               </div>
                             )}
                           </div>
+                          {/* API Endpoint for Relay (if enabled) */}
                           {wakuNodeType === "relay" && (
                             <div className="space-y-2">
                               <label
                                 htmlFor="waku-url"
                                 className="text-sm font-medium font-mono"
                               >
-                                API_ENDPOINT
+                                API_ENDPOINT (Relay)
                               </label>
                               <Input
                                 id="waku-url"
@@ -2070,9 +2386,10 @@ export default function Home() {
                                 onChange={(e) => setWakuNodeUrl(e.target.value)}
                                 placeholder="http://127.0.0.1:8645"
                                 className="font-mono text-sm bg-card/70"
+                                disabled
                               />
                               <p className="text-xs text-muted-foreground font-mono">
-                                nwaku node API endpoint URL
+                                nwaku node API endpoint URL (for relay mode)
                               </p>
                             </div>
                           )}
@@ -2081,14 +2398,14 @@ export default function Home() {
                               <div className="flex items-center gap-1 mb-1">
                                 <Info size={12} className="text-primary/70" />
                                 <span className="text-xs font-medium text-primary/90 font-mono">
-                                  WAKU_STATUS
+                                  WAKU_LIGHT_STATUS
                                 </span>
                               </div>
                               <div className="space-y-1 pl-4 border-l border-primary/10">
                                 <p className="text-xs font-mono flex items-center justify-between">
                                   <span className="text-muted-foreground">
                                     STATUS:
-                                  </span>
+                                  </span>{" "}
                                   <span
                                     className={`${
                                       isWakuConnected
@@ -2108,7 +2425,7 @@ export default function Home() {
                                     <p className="text-xs font-mono flex items-center justify-between">
                                       <span className="text-muted-foreground">
                                         PEERS:
-                                      </span>
+                                      </span>{" "}
                                       <span className="text-primary/80">
                                         {wakuPeerCount}
                                       </span>
@@ -2116,7 +2433,7 @@ export default function Home() {
                                     <p className="text-xs font-mono flex items-center justify-between">
                                       <span className="text-muted-foreground">
                                         TOPIC:
-                                      </span>
+                                      </span>{" "}
                                       <span
                                         className="text-primary/80 truncate max-w-[180px]"
                                         title={wakuContentTopic}
@@ -2132,12 +2449,23 @@ export default function Home() {
                                     {wakuError}
                                   </p>
                                 )}
+                                {!isWakuConnected && !isWakuConnecting && (
+                                  <Button
+                                    variant="link"
+                                    size="sm"
+                                    className="text-xs p-0 h-auto font-mono text-primary"
+                                    onClick={reconnectWaku}
+                                  >
+                                    Try Reconnect
+                                  </Button>
+                                )}
                               </div>
                             </div>
                           )}
                         </div>
                       </div>
 
+                      {/* TACo Settings */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 justify-between">
                           <div className="flex items-center gap-2">
@@ -2145,7 +2473,7 @@ export default function Home() {
                               <Shield size={16} className="text-primary" />
                             </div>
                             <h3 className="text-base font-medium font-mono">
-                              TACO_SETTINGS
+                              TACO_ENCRYPTION
                             </h3>
                           </div>
                           {walletConnected ? (
@@ -2161,6 +2489,7 @@ export default function Home() {
                           )}
                         </div>
                         <div className="space-y-4 pl-2 ml-2 border-l border-border">
+                          {/* Wallet Connection */}
                           <div className="space-y-2">
                             <label className="text-sm font-medium font-mono">
                               WALLET_CONNECTION
@@ -2172,9 +2501,10 @@ export default function Home() {
                                 : "Connect your wallet to enable TACo encryption"}
                             </p>
                           </div>
+                          {/* Encryption Toggle */}
                           <div className="space-y-2">
                             <label className="text-sm font-medium font-mono">
-                              ENCRYPTION
+                              ENCRYPTION_STATUS
                             </label>
                             <div className="flex items-center space-x-2">
                               <Switch
@@ -2204,6 +2534,7 @@ export default function Home() {
                               Protect your shared files with TACo encryption
                             </p>
                           </div>
+                          {/* Access Condition Settings (if encryption enabled) */}
                           {useEncryption && walletConnected && (
                             <div className="mt-3 p-2 bg-card/50 border border-primary/10 rounded-md">
                               <div className="flex items-center gap-1 mb-3">
@@ -2351,10 +2682,8 @@ export default function Home() {
                 </Sheet>
               </div>
             </div>
-            <div className="grid gap-8">
-              <div className="absolute inset-0 pointer-events-none opacity-10 bg-scanline"></div>
-            </div>
 
+            {/* Dropzone */}
             <div className="mt-8">
               <div
                 {...getRootProps()}
@@ -2393,6 +2722,7 @@ export default function Home() {
               </div>
             </div>
 
+            {/* File Lists (Sent & Received) */}
             <Tabs defaultValue="sent" className="w-full">
               <TabsList className="grid w-full grid-cols-2 mb-4 font-mono">
                 <TabsTrigger value="sent" className="flex items-center gap-2">
@@ -2420,7 +2750,7 @@ export default function Home() {
                                 ({
                                   id: fileId,
                                   name: file.name,
-                                  size: file.size,
+                                  size: file.size / (1024 * 1024),
                                   type: file.type,
                                   timestamp: new Date().toLocaleString(),
                                   fileId: undefined,
@@ -2623,7 +2953,8 @@ export default function Home() {
                                 </div>
                               </div>
                               <div className="flex items-center gap-1 flex-shrink-0 ml-2">
-                                {file.name.endsWith(".py") && (
+                                {(file.name.endsWith(".py") ||
+                                  file.type.includes("python")) && (
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -2724,7 +3055,10 @@ export default function Home() {
           </div>
         </main>
 
-        <div className="mt-4">{renderNodeInfo()}</div>
+        {/* Node Info display */}
+        <footer className="p-4 md:p-8 pt-0">
+          <div className="w-full max-w-5xl mx-auto">{renderNodeInfo()}</div>
+        </footer>
 
         <style jsx global>{`
           .terminal-display {
@@ -2734,36 +3068,7 @@ export default function Home() {
           .terminal-glow {
             box-shadow: 0 0 10px rgba(6, 243, 145, 0.3);
           }
-          .terminal-display::before {
-            content: "";
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: radial-gradient(
-              ellipse at center,
-              transparent 50%,
-              rgba(0, 0, 0, 0.3) 100%
-            );
-            pointer-events: none;
-            z-index: 9996;
-          }
-          .terminal-display::after {
-            content: "";
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: radial-gradient(
-              ellipse at center,
-              transparent 60%,
-              rgba(3, 33, 21, 0.4) 100%
-            );
-            pointer-events: none;
-            z-index: 9995;
-          }
+          /* Enhanced cathode effects from globals.css are already applied via body styles */
         `}</style>
       </div>
     </TooltipProvider>
