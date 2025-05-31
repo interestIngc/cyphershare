@@ -31,12 +31,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     // Copy relevant headers from the original request
-    ['accept', 'content-type', 'content-length', 'content-disposition'].forEach(header => {
+    ['accept', 'content-length', 'content-disposition'].forEach(header => {
       const value = req.headers[header];
       if (value) {
         headers.set(header, value.toString());
       }
     });
+
+    headers.set('content-type', 'text/plain');
 
     // Get the raw body if needed
     let body: Buffer | undefined;
