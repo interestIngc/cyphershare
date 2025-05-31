@@ -139,7 +139,6 @@ export default function Home() {
     useState<FileItem | null>(null);
   const pyFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Pyodide State
   const [pyodide, setPyodide] = useState<any>(null);
   const [isPyodideReady, setIsPyodideReady] = useState(false);
   const [pyodideLoadingMessage, setPyodideLoadingMessage] = useState<
@@ -150,8 +149,14 @@ export default function Home() {
     null
   );
   const [isScriptRunning, setIsScriptRunning] = useState(false);
+  const [pyodideOutputFilePath, setPyodideOutputFilePath] = useState<
+    string | null
+  >(null);
+  const [isUploadingPyodideOutput, setIsUploadingPyodideOutput] =
+    useState(false);
+  const [pyodideOutputUploadProgress, setPyodideOutputUploadProgress] =
+    useState(0);
 
-  // Pyodide Initialization Effect
   useEffect(() => {
     const loadPyodideInstance = async () => {
       setPyodideLoadingMessage("Loading Pyodide runtime...");
@@ -192,13 +197,11 @@ export default function Home() {
         };
         document.head.appendChild(script);
         return () => {
-          // Cleanup script tag if component unmounts during load
           if (document.head.contains(script)) {
             document.head.removeChild(script);
           }
         };
       } else {
-        // window.loadPyodide is already available
         loadPyodideInstance();
       }
     } else if (
@@ -208,7 +211,7 @@ export default function Home() {
     ) {
       setPyodideLoadingMessage("Pyodide is ready.");
     }
-  }, [pyodide, isPyodideReady]); // Dependencies
+  }, [pyodide, isPyodideReady]);
 
   useEffect(() => {
     if (accessConditionType === "time" && timeInputRef.current) {
@@ -1003,10 +1006,11 @@ export default function Home() {
 
     try {
       setCopySuccess(`Fetching ${file.name} for viewing...`);
-      setSelectedPyFileForView(file); // Set the script file that is being viewed
-      setPyodideOutput([]); // Clear previous output when opening new script
-      setSelectedDataFiles(null); // Clear previously selected data files
-      if (pyFileInputRef.current) pyFileInputRef.current.value = ""; // Reset file input
+      setSelectedPyFileForView(file);
+      setPyodideOutput([]);
+      setSelectedDataFiles(null);
+      setPyodideOutputFilePath(null);
+      if (pyFileInputRef.current) pyFileInputRef.current.value = "";
 
       let fileDataBlob: Blob | undefined;
 
@@ -1080,7 +1084,7 @@ export default function Home() {
 
       if (fileDataBlob) {
         const textContent = await fileDataBlob.text();
-        setPyFileContent(textContent); // This is the script content
+        setPyFileContent(textContent);
         setIsViewPyModalOpen(true);
       } else {
         throw new Error("Could not retrieve file content for viewing.");
@@ -1103,7 +1107,6 @@ export default function Home() {
       return;
     }
     if (!selectedPyFileForView || !pyFileContent) {
-      // pyFileContent is the script source
       setPyodideOutput((prev) => [
         ...prev,
         "Error: No Python script content loaded for execution.",
@@ -1119,6 +1122,7 @@ export default function Home() {
     }
 
     setIsScriptRunning(true);
+    setPyodideOutputFilePath(null); // Reset any previous output file path
     setPyodideOutput([`Running script: ${selectedPyFileForView.name}...`]);
 
     try {
@@ -1149,63 +1153,154 @@ export default function Home() {
       await pyodide.loadPackagesFromImports(pyFileContent);
       setPyodideOutput((prev) => [...prev, "Packages loaded (if any)."]);
 
-      let scriptStdOut = ""; // To accumulate stdout
-      let scriptStdErr = ""; // To accumulate stderr
       pyodide.setStdout({
         batched: (msg: string) => {
-          scriptStdOut += msg + "\n";
           setPyodideOutput((prev) => [...prev, `[stdout] ${msg}`]);
         },
       });
       pyodide.setStderr({
         batched: (msg: string) => {
-          scriptStdErr += msg + "\n";
           setPyodideOutput((prev) => [...prev, `[stderr] ${msg}`]);
         },
       });
 
       setPyodideOutput((prev) => [...prev, "Executing Python script..."]);
-      const result = await pyodide.runPythonAsync(pyFileContent); // pyFileContent is the script
+      const result = await pyodide.runPythonAsync(pyFileContent);
       setPyodideOutput((prev) => [...prev, `Script execution finished.`]);
       if (result !== undefined) {
         setPyodideOutput((prev) => [...prev, `Result: ${String(result)}`]);
       }
 
-      // Example of reading an output file
-      const commonOutputFilePath = "/home/output.txt"; // A conventionally named output
-      if (pyodide.FS.analyzePath(commonOutputFilePath).exists) {
-        const outputContent = pyodide.FS.readFile(commonOutputFilePath, {
+      // Check for a conventional output file
+      const conventionalOutputPath = "/home/output.txt";
+      if (pyodide.FS.analyzePath(conventionalOutputPath).exists) {
+        setPyodideOutput((prev) => [
+          ...prev,
+          `Output file detected: ${conventionalOutputPath}`,
+        ]);
+        setPyodideOutputFilePath(conventionalOutputPath); // Enable upload button
+        const outputContent = pyodide.FS.readFile(conventionalOutputPath, {
           encoding: "utf8",
         });
         setPyodideOutput((prev) => [
           ...prev,
-          `--- Content of ${commonOutputFilePath} ---`,
+          `--- Content of ${conventionalOutputPath} ---`,
           outputContent,
-          `--- End of ${commonOutputFilePath} ---`,
+          `--- End of ${conventionalOutputPath} ---`,
         ]);
+      } else {
+        setPyodideOutput((prev) => [
+          ...prev,
+          `No conventional output file (${conventionalOutputPath}) found after script execution.`,
+        ]);
+        setPyodideOutputFilePath(null);
       }
     } catch (error) {
       console.error("Error running Python script:", error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       setPyodideOutput((prev) => [...prev, `Execution Error: ${errorMsg}`]);
+      setPyodideOutputFilePath(null);
     } finally {
       setIsScriptRunning(false);
-      // Clean up data files from Pyodide FS
-      if (pyodide && pyodide.FS && selectedDataFiles) {
-        for (const file of Array.from(selectedDataFiles)) {
-          try {
-            pyodide.FS.unlink(`/home/${file.name}`);
-          } catch (e) {
-            /* ignore */
-          }
+      // Do NOT clean up input data files from Pyodide FS here, user might want to re-run or upload different output
+      // Cleanup of /home/output.txt might be done before next run if needed or after successful upload.
+    }
+  };
+
+  const handleUploadPyodideOutput = async () => {
+    if (
+      !pyodide ||
+      !isPyodideReady ||
+      !pyodideOutputFilePath ||
+      !isCodexNodeActive
+    ) {
+      setUploadError(
+        "Cannot upload output: System not ready or no output file detected."
+      );
+      setTimeout(() => setUploadError(null), 5000);
+      return;
+    }
+
+    setIsUploadingPyodideOutput(true);
+    setPyodideOutputUploadProgress(0);
+    const outputFileName =
+      pyodideOutputFilePath.split("/").pop() ||
+      `pyodide_output_${Date.now()}.txt`;
+
+    try {
+      setCopySuccess(`Preparing to upload ${outputFileName}...`);
+      const fileContentUint8Array = pyodide.FS.readFile(pyodideOutputFilePath, {
+        encoding: "binary",
+      });
+      const outputFileBlob = new Blob([fileContentUint8Array], {
+        type: "application/octet-stream",
+      }); // Or text/plain if always text
+      const outputFile = new globalThis.File([outputFileBlob], outputFileName, {
+        type: outputFileBlob.type,
+      });
+
+      const result = await getCodexClient().uploadFile(
+        outputFile,
+        (progress: number) => {
+          setPyodideOutputUploadProgress(progress);
         }
-        // Example cleanup for common output file
-        try {
-          pyodide.FS.unlink("/home/output.txt");
-        } catch (e) {
-          /* ignore */
+      );
+
+      if (result.success && result.id) {
+        const timestamp = new Date().toLocaleString("en-US", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const newFile: FileItem = {
+          id: `pyodide-output-${Date.now()}`,
+          name: outputFile.name,
+          isEncrypted: false, // Pyodide output is not encrypted by default here
+          size: parseFloat((outputFile.size / (1024 * 1024)).toFixed(2)),
+          type: outputFile.type,
+          timestamp,
+          fileId: result.id,
+        };
+        setSentFiles((prev) => [newFile, ...prev]);
+        setCopySuccess(
+          `Successfully uploaded ${outputFile.name}. CID: ${result.id.substring(
+            0,
+            8
+          )}...`
+        );
+
+        if (isWakuConnected) {
+          await sendFileMessage({
+            fileName: newFile.name,
+            fileSize: newFile.size,
+            fileType: newFile.type,
+            fileId: result.id,
+            isEncrypted: false,
+          });
         }
+        // Optionally, clear the output file from Pyodide FS after successful upload
+        // pyodide.FS.unlink(pyodideOutputFilePath);
+        // setPyodideOutputFilePath(null);
+      } else {
+        setUploadError(
+          `Failed to upload ${outputFile.name}: ${
+            result.error || "Unknown upload error"
+          }`
+        );
       }
+    } catch (error) {
+      console.error("Error uploading Pyodide output:", error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setUploadError(`Error uploading script output: ${errorMsg}`);
+    } finally {
+      setIsUploadingPyodideOutput(false);
+      setPyodideOutputUploadProgress(0);
+      setTimeout(() => {
+        setUploadError(null);
+        setCopySuccess(null);
+      }, 5000);
     }
   };
 
@@ -1336,6 +1431,7 @@ export default function Home() {
                 setSelectedPyFileForView(null);
                 setPyodideOutput([]);
                 setSelectedDataFiles(null);
+                setPyodideOutputFilePath(null);
                 if (pyFileInputRef.current) pyFileInputRef.current.value = "";
               }
             }}
@@ -1399,15 +1495,22 @@ export default function Home() {
                         Script is running...
                       </p>
                     )}
+                    {isUploadingPyodideOutput && (
+                      <p className="p-2 text-primary animate-pulse">
+                        Uploading output: {pyodideOutputUploadProgress}%
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <DialogFooter className="mt-2 pt-3 border-t border-border">
+              <DialogFooter className="mt-2 pt-3 border-t border-border items-center">
                 <div className="flex-grow text-xs text-muted-foreground font-mono mr-auto">
                   {selectedDataFiles
                     ? `${selectedDataFiles.length} data file(s) selected`
                     : "No data files selected"}
+                  {pyodideOutputFilePath &&
+                    ` | Output: ${pyodideOutputFilePath.split("/").pop()}`}
                 </div>
                 <Button
                   variant="outline"
@@ -1435,7 +1538,6 @@ export default function Home() {
                         setCopySuccess(`Selected ${files.length} data files.`);
                       }
                       setTimeout(() => setCopySuccess(null), 3000);
-                      // Don't reset e.target.value immediately, keep files for run
                     } else {
                       setSelectedDataFiles(null);
                     }
@@ -1450,13 +1552,30 @@ export default function Home() {
                     isScriptRunning ||
                     !selectedDataFiles ||
                     selectedDataFiles.length === 0 ||
-                    !pyFileContent
+                    !pyFileContent ||
+                    isUploadingPyodideOutput
                   }
                 >
                   {isScriptRunning ? "Running..." : "Run Script"}
                 </Button>
+                <Button
+                  variant="secondary"
+                  className="font-mono"
+                  onClick={handleUploadPyodideOutput}
+                  disabled={
+                    !isPyodideReady ||
+                    isScriptRunning ||
+                    !pyodideOutputFilePath ||
+                    !isCodexNodeActive ||
+                    isUploadingPyodideOutput
+                  }
+                >
+                  {isUploadingPyodideOutput
+                    ? `Uploading ${pyodideOutputUploadProgress}%...`
+                    : "Upload Output"}
+                </Button>
                 <DialogClose asChild>
-                  <Button variant="secondary" className="font-mono">
+                  <Button variant="outline" className="font-mono">
                     Close
                   </Button>
                 </DialogClose>
