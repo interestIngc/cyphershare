@@ -1227,14 +1227,18 @@ export default function Home() {
         setPyodideOutput((prev) => [...prev, `Result: ${String(result)}`]);
       }
 
-      // --- NEW: Secret Generation ---
-      const newSecret = `secret_${Date.now()}_${Math.random()
-        .toString(36)
-        .substring(2, 15)}`;
+      const randomBytes = new Uint8Array(16);
+      window.crypto.getRandomValues(randomBytes);
+
+      // Convert to hex string for display/storage
+      const newSecret = Array.from(randomBytes)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
       setComputationSecret(newSecret);
       // Store script hash associated with this run, if the file item doesn't have it yet
       if (selectedPyFileForView && !selectedPyFileForView.scriptHash) {
-        const hash = await calculateSha256(pyFileContent);
+        const hash = await calculateSha256(pyFileContent) + newSecret;
         setSelectedPyFileForView((prev) =>
           prev ? { ...prev, scriptHash: hash } : null
         );
@@ -1305,22 +1309,23 @@ export default function Home() {
       setTimeout(() => setUploadError(null), 5000);
       return;
     }
-    const scriptHash = await calculateSha256(pyFileContent);
-    // Update the FileItem with the scriptHash if not already set
-    setSelectedPyFileForView((prev) => (prev ? { ...prev, scriptHash } : null));
+    const hash = await calculateSha256(pyFileContent) + computationSecret;
+    setSelectedPyFileForView((prev) => (prev ? { ...prev, scriptHash: hash } : null));
 
-    const subject = `Computation Proof: ScriptHash=${scriptHash} for Wallet=${walletAddress}`;
-    const bodyInstruction = `Please ensure the BODY of your email contains ONLY the following secret:\n\n${computationSecret}`;
+    const subject = `Claim reward for running the computation on my private data`;
+    const bodyInstruction = `Please ensure the BODY of your email contains ONLY the following hash:\n\n${hash}`;
 
     setEmailProofSubject(subject);
     setEmailProofBodyInstruction(bodyInstruction);
     setSelectedEmlFileForProof(null); // Reset selected .eml file
+    
+    // Close the script preview dialog when opening the email proof submission dialog
+    setIsViewPyModalOpen(false);
     setIsProofSubmissionModalOpen(true);
   };
 
   const handleSubmitEmailProof = async () => {
     if (
-      !selectedEmlFileForProof ||
       !selectedPyFileForView?.scriptHash ||
       !computationSecret ||
       !pyFileContent
