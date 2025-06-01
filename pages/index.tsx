@@ -1227,35 +1227,6 @@ export default function Home() {
         setPyodideOutput((prev) => [...prev, `Result: ${String(result)}`]);
       }
 
-      // --- NEW: Secret Generation ---
-      const newSecret = `secret_${Date.now()}_${Math.random()
-        .toString(36)
-        .substring(2, 15)}`;
-      setComputationSecret(newSecret);
-      // Store script hash associated with this run, if the file item doesn't have it yet
-      if (selectedPyFileForView && !selectedPyFileForView.scriptHash) {
-        const hash = await calculateSha256(pyFileContent);
-        setSelectedPyFileForView((prev) =>
-          prev ? { ...prev, scriptHash: hash } : null
-        );
-      }
-      setPyodideOutput((prev) => [
-        ...prev,
-        `------------------------------------------------------------`,
-      ]);
-      setPyodideOutput((prev) => [
-        ...prev,
-        `✅ COMPUTATION SECRET GENERATED: ${newSecret}`,
-      ]);
-      setPyodideOutput((prev) => [
-        ...prev,
-        `   Keep this secret safe. You'll need it for the email proof.`,
-      ]);
-      setPyodideOutput((prev) => [
-        ...prev,
-        `------------------------------------------------------------`,
-      ]);
-
       // Check for conventional output file (same as before)
       const conventionalOutputPath =
         "/home/pyodide/fNIRS_Glucose_Analysis_Output_v17_carol_2_files_home_file_output/processing_log_v17_carol_2_files_home_file_output.txt";
@@ -1274,6 +1245,29 @@ export default function Home() {
           outputContent,
           `--- End of ${conventionalOutputPath} ---`,
         ]);
+
+        const randomBytes = new Uint8Array(16);
+        window.crypto.getRandomValues(randomBytes);
+  
+        // Convert to hex string for display/storage
+        const newSecret = Array.from(randomBytes)
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+  
+        setComputationSecret(newSecret);
+
+        setPyodideOutput((prev) => [
+          ...prev,
+          `------------------------------------------------------------`,
+        ]);
+        setPyodideOutput((prev) => [
+          ...prev,
+          `✅ COMPUTATION SECRET GENERATED: ${newSecret}`,
+        ]);
+        setPyodideOutput((prev) => [
+          ...prev,
+          `------------------------------------------------------------`,
+        ]);  
       } else {
         setPyodideOutput((prev) => [
           ...prev,
@@ -1305,12 +1299,13 @@ export default function Home() {
       setTimeout(() => setUploadError(null), 5000);
       return;
     }
-    const scriptHash = await calculateSha256(pyFileContent);
-    // Update the FileItem with the scriptHash if not already set
-    setSelectedPyFileForView((prev) => (prev ? { ...prev, scriptHash } : null));
 
-    const subject = `Computation Proof: ScriptHash=${scriptHash} for Wallet=${walletAddress}`;
-    const bodyInstruction = `Please ensure the BODY of your email contains ONLY the following secret:\n\n${computationSecret}`;
+    const hash = await calculateSha256(pyFileContent) + computationSecret;
+    // Update the FileItem with the scriptHash if not already set
+    setSelectedPyFileForView((prev) => (prev ? { ...prev, scriptHash: hash } : null));
+
+    const subject = `Claim reward for running the computation on my private data`;
+    const bodyInstruction = `Please ensure the BODY of your email contains ONLY the following hash:\n\n${hash}`;
 
     setEmailProofSubject(subject);
     setEmailProofBodyInstruction(bodyInstruction);
