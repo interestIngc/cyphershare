@@ -1807,8 +1807,8 @@ export default function Home() {
               }
             }}
           >
-            <DialogContent className="sm:max-w-lg bg-card border-border">
-              <DialogHeader className="border-b border-border pb-3">
+            <DialogContent className="sm:max-w-[700px] md:max-w-[700px] lg:max-w-[1100px] h-[90vh] flex flex-col bg-card border-border">
+              <DialogHeader className="border-b pb-3">
                 <DialogTitle className="font-mono text-primary flex items-center gap-2">
                   <Mail size={18} />
                   Submit Computation Email Proof
@@ -1856,7 +1856,10 @@ export default function Home() {
                       Body (Exact - Plain Text):
                     </strong>
                     <div className="mt-1 p-2 bg-background border border-input rounded text-xs text-primary break-all flex items-center gap-2">
-                      <span>{computationSecret}</span>
+                      <span> {emailProofBodyInstruction
+                        .split("\n")
+                        .slice(1)
+                        .join("\n")}</span>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1870,12 +1873,7 @@ export default function Home() {
                         <Copy size={12} />
                       </Button>
                     </div>
-                    <p className="text-xs text-muted-foreground/70 mt-1">
-                      {emailProofBodyInstruction
-                        .split("\n")
-                        .slice(1)
-                        .join("\n")}
-                    </p>
+            
                   </div>
                 </div>
                 <p className="text-foreground/90">
