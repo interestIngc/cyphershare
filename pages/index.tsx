@@ -1,4 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import dotenv from "dotenv";
+
+// Load environment variables
+if (typeof window === "undefined") {
+  // Only run on server-side
+  dotenv.config();
+}
+
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet-connect-button";
 import { useWallet } from "@/context/wallet-context";
@@ -69,6 +77,14 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip";
+import { createVlayerClient, preverifyEmail } from "@vlayer/sdk";
+import {
+  createContext,
+  deployVlayerContracts,
+  getConfig,
+} from "@vlayer/sdk/config";
+import prover_abi from "./prover_abi.json";
+
 
 declare global {
   interface Window {
@@ -1347,32 +1363,44 @@ export default function Home() {
     setCopySuccess(null);
 
     try {
-      const emlContent = await selectedEmlFileForProof.text();
+      const config = getConfig();
+      const {
+        chain,
+        ethClient,
+        account: john,
+        proverUrl,
+        dnsServiceUrl,
+        confirmations,
+      } = createContext(config);      
 
-      const payload = {
-        emlMimeContent: emlContent,
-        originalScriptContent: pyFileContent, // Send full script content
-        workerProvidedSecret: computationSecret,
-        // The payoutWallet will be extracted from the email subject by the prover
-      };
+      const emlContent = await selectedEmlFileForProof!.text();
 
-      // console.log("Submitting to backend /api/submit-email-computation-proof:", payload);
+      const vlayer = createVlayerClient({
+        url: proverUrl,
+        token: config.token,
+      });
 
-      const response = await axios.post(
-        "/api/submit-email-computation-proof",
-        payload,
-        {
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      const hash = await vlayer.prove({
+        address: "0xc81a3d0cca7bdec24ecc0c1f05879b3fef820713",
+        proverAbi: prover_abi as any,
+        functionName: "main",
+        chainId: chain.id,
+        gasLimit: config.gasLimit,
+        args: [
+          await preverifyEmail({
+            mimeEmail: emlContent,
+            dnsResolverUrl: dnsServiceUrl || "",
+            token: config.token,
+          }), 
+          pyFileContent, 
+          computationSecret
+        ],
+      });
+      const result = await vlayer.waitForProvingResult({ hash });
 
-      if (response.data.success) {
+      if (result) {
         setCopySuccess(
-          `Email proof submitted successfully! Tx: ${
-            response.data.transactionHash
-              ? response.data.transactionHash.substring(0, 10) + "..."
-              : "N/A"
-          }`
+          `Email proof submitted successfully!`
         );
         setIsProofSubmissionModalOpen(false);
         // Optionally reset relevant states
@@ -1380,9 +1408,7 @@ export default function Home() {
         setSelectedEmlFileForProof(null);
       } else {
         setUploadError(
-          `Proof submission failed: ${
-            response.data.error || "Unknown backend error"
-          }`
+          `Proof submission failed`
         );
       }
     } catch (error: any) {
